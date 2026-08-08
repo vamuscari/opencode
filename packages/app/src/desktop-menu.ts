@@ -46,6 +46,7 @@ export type DesktopMenuRole =
 
 export type DesktopMenuItem = {
   type: "item"
+  label?: string
   labelKey?: DesktopNativeKey
   command?: string
   action?: DesktopMenuAction
@@ -236,6 +237,9 @@ export const DESKTOP_MENU: DesktopMenu[] = [
     items: [
       { type: "item", labelKey: "desktop.menu.back", command: "common.goBack", accelerator: { macos: "Cmd+[" } },
       { type: "item", labelKey: "desktop.menu.forward", command: "common.goForward", accelerator: { macos: "Cmd+]" } },
+      { type: "separator" },
+      { type: "item", label: "Previous Tab", command: "tab.prev", accelerator: { macos: "Option+Up" } },
+      { type: "item", label: "Next Tab", command: "tab.next", accelerator: { macos: "Option+Down" } },
       { type: "separator" },
       {
         type: "item",

@@ -89,7 +89,7 @@ export function WindowsAppMenu(props: {
                       <DropdownMenu.Separator />
                     ) : (
                       <DesktopMenuItem
-                        label={entry.labelKey ? language.t(entry.labelKey) : ""}
+                        label={entry.label ?? (entry.labelKey ? language.t(entry.labelKey) : "")}
                         keybind={entry.command ? props.command.keybind(entry.command) : entry.accelerator?.windows}
                         disabled={entry.command ? commandDisabled(entry.command) : false}
                         onSelect={() => runEntry(entry)}
