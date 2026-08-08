@@ -1,8 +1,7 @@
 export const dict = {
   "desktop.menu.checkForUpdates": "Sprawdź aktualizacje...",
-  "desktop.menu.installCli": "Zainstaluj CLI...",
-  "desktop.menu.reloadWebview": "Załaduj ponownie WebView",
-  "desktop.menu.restart": "Uruchom ponownie",
+  "desktop.menu.reloadWebview": "Przeładuj Webview",
+  "desktop.menu.restart": "Restartuj",
 
   "desktop.dialog.chooseFolder": "Wybierz folder",
   "desktop.dialog.chooseFile": "Wybierz plik",
@@ -19,13 +18,4 @@ export const dict = {
     "Pobrano wersję {{version}} OpenCode. Czy chcesz ją zainstalować i uruchomić ponownie?",
   "desktop.updater.installFailed.title": "Aktualizacja nie powiodła się",
   "desktop.updater.installFailed.message": "Nie udało się zainstalować aktualizacji",
-
-  "desktop.cli.installed.title": "Zainstalowano interfejs CLI",
-  "desktop.cli.installed.message":
-    "Interfejs CLI zainstalowano w {{path}}\n\nUruchom ponownie terminal, aby użyć polecenia „opencode”.",
-  "desktop.cli.failed.title": "Instalacja nie powiodła się",
-  "desktop.cli.failed.message": "Nie udało się zainstalować CLI: {{error}}",
-
-  "desktop.error.dev.rootNotFound":
-    "Nie znaleziono elementu głównego. Czy zapomniałeś dodać go do swojego index.html? A może atrybut id został błędnie wpisany?",
 }

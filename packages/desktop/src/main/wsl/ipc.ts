@@ -3,7 +3,6 @@ import type { IpcMainInvokeEvent } from "electron"
 import type { WslServersController } from "./servers"
 import { requireWslIpcString, requireWslIpcStrings } from "./policy"
 import type { WslServersState } from "../../preload/types"
-import { nativeT } from "../native-translations"
 
 export function registerWslIpcHandlers(controller: WslServersController) {
   if (process.platform !== "win32") {
@@ -69,13 +68,13 @@ export function registerWslIpcHandlers(controller: WslServersController) {
 
 function registerUnavailableWslIpcHandlers() {
   const unavailable = () => {
-    throw new Error(nativeT("desktop.wsl.error.windowsOnly"))
+    throw new Error("WSL is only available on Windows")
   }
   const state = (): WslServersState => ({
     runtime: {
       available: false,
       version: null,
-      error: nativeT("desktop.wsl.error.windowsOnly"),
+      error: "WSL is only available on Windows",
     },
     installed: [],
     online: [],

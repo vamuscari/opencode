@@ -1,6 +1,6 @@
 export * as Image from "./image"
 
-import { makeLocationNode } from "./effect/app-node"
+import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Config } from "./config"
 import { FileSystem } from "./filesystem"
@@ -61,7 +61,7 @@ const layer = Layer.effect(
       const image = Object.assign(
         {},
         ...(yield* config.entries()).flatMap((entry) =>
-          entry.type === "document" && entry.info.attachments?.image ? [entry.info.attachments.image] : [],
+          entry.type === "document" && entry.info.media?.image ? [entry.info.media.image] : [],
         ),
       )
       const normalize = yield* loadAdapter
@@ -75,7 +75,5 @@ const layer = Layer.effect(
     return Service.of({ normalize })
   }),
 )
-
-export const locationLayer = layer.pipe(Layer.provide(Config.locationLayer))
 
 export const node = makeLocationNode({ service: Service, layer, deps: [Config.node] })

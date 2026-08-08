@@ -8,7 +8,6 @@ import { useServerSDK } from "./server-sdk"
 import { useSettings } from "./settings"
 import { useSDK } from "./sdk"
 import { useTabs, type Tab } from "./tabs"
-import type { ServerScope } from "@/utils/server-scope"
 import {
   createPromptReady,
   createPromptSession,
@@ -105,13 +104,11 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
       params.serverKey ? requireServerKey(params.serverKey) : ServerConnection.key(serverSDK().server)
     const scope = (): PromptScope =>
       search.draftId ? { draftID: search.draftId } : { dir: base64Encode(sdk().directory), id: params.id }
-    const load = (scope: PromptScope, target?: { server?: ServerConnection.Key; scope: ServerScope }) => {
-      const current = settings.general.newLayoutDesigns()
-        ? selectPromptTab(tabs.store, scope, target?.server ?? serverKey())
-        : undefined
-      if (current) return createTabPromptState(tabs, current, target?.scope ?? serverSDK().scope, scope)
+    const load = (scope: PromptScope) => {
+      const current = settings.general.newLayoutDesigns() ? selectPromptTab(tabs.store, scope, serverKey()) : undefined
+      if (current) return createTabPromptState(tabs, current, serverSDK().scope, scope)
 
-      const key = target ? `${target.scope}:${scopeKey(scope)}` : scopeKey(scope)
+      const key = scopeKey(scope)
       const existing = cache.get(key)
       if (existing) {
         cache.delete(key)
@@ -121,7 +118,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
 
       const entry = createRoot(
         (dispose) => ({
-          value: createPromptSession(target?.scope ?? serverSDK().scope, scope),
+          value: createPromptSession(serverSDK().scope, scope),
           dispose,
         }),
         owner,
@@ -133,8 +130,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
     }
 
     const session = createMemo(() => load(scope()))
-    const pick = (scope?: PromptScope, target?: { server?: ServerConnection.Key; scope: ServerScope }) =>
-      scope ? load(scope, target) : session()
+    const pick = (scope?: PromptScope) => (scope ? load(scope) : session())
     const ready = createPromptReady(session)
 
     const withSuspense = <T,>(cb: () => T): (() => T) =>
@@ -150,8 +146,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
 
     return {
       ready,
-      capture: (scope?: PromptScope, target?: { server?: ServerConnection.Key; scope: ServerScope }) =>
-        pick(scope, target).capture(),
+      capture: (scope?: PromptScope) => pick(scope).capture(),
       current: withSuspense(() => session().current()),
       cursor: withSuspense(() => session().cursor()),
       dirty: withSuspense(() => session().dirty()),

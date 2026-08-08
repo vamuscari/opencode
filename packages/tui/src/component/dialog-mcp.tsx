@@ -1,85 +1,234 @@
-import { createMemo, createSignal } from "solid-js"
-import { useLocal } from "../context/local"
-import { useSync } from "../context/sync"
-import { map, pipe, entries, sortBy } from "remeda"
-import { DialogSelect, type DialogSelectRef, type DialogSelectOption } from "../ui/dialog-select"
+import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
+import { useData } from "../context/data"
+import { useClient } from "../context/client"
+import { Keymap } from "../context/keymap"
+import { pipe, sortBy } from "remeda"
+import { DialogSelect } from "../ui/dialog-select"
+import { useDialog } from "../ui/dialog"
 import { useTheme } from "../context/theme"
-import { TextAttributes } from "@opentui/core"
-import { useSDK } from "../context/sdk"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
+import type { McpServer } from "@opencode-ai/client"
+import { useClipboard } from "../context/clipboard"
+import { useToast } from "../ui/toast"
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import { useConfig } from "../config"
+import { getScrollAcceleration } from "../util/scroll"
 
-function Status(props: { enabled: boolean; loading: boolean }) {
-  const { theme } = useTheme()
-  if (props.loading) {
-    return <span style={{ fg: theme.textMuted }}>⋯ Loading</span>
+function statusError(status: McpServer["status"]) {
+  if (status.status === "failed") return status.error
+  return undefined
+}
+
+function Status(props: { status: McpServer["status"]; loading: boolean }) {
+  if (props.loading || props.status.status === "pending") {
+    return <>Connecting …</>
   }
-  if (props.enabled) {
-    return <span style={{ fg: theme.success, attributes: TextAttributes.BOLD }}>✓ Enabled</span>
+  if (props.status.status === "connected") {
+    return <span style={{ attributes: TextAttributes.BOLD }}>Connected ✓</span>
   }
-  return <span style={{ fg: theme.textMuted }}>○ Disabled</span>
+  if (props.status.status === "failed") {
+    return <>Failed !</>
+  }
+  if (props.status.status === "needs_auth") {
+    return <>Sign in required →</>
+  }
+  return <>Disabled ○</>
 }
 
 export function DialogMcp() {
-  const local = useLocal()
-  const sync = useSync()
-  const sdk = useSDK()
-  const [, setRef] = createSignal<DialogSelectRef<unknown>>()
+  const data = useData()
+  const dialog = useDialog()
+  const client = useClient()
+  const toast = useToast()
+  const theme = useTheme("elevated")
+  const [focused, setFocused] = createSignal<string>()
+  const [detail, setDetail] = createSignal<McpServer>()
   const [loading, setLoading] = createSignal<string | null>(null)
 
-  const options = createMemo(() => {
-    // Track sync data and loading state to trigger re-render when they change
-    const mcpData = sync.data.mcp
-    const loadingMcp = loading()
+  const statusColor = (status: McpServer["status"]) => {
+    if (status.status === "connected") return theme.text.feedback.success.default
+    if (status.status === "failed") return theme.text.feedback.error.default
+    if (status.status === "needs_auth") return theme.text.feedback.warning.default
+    return theme.text.subdued
+  }
 
-    return pipe(
-      mcpData ?? {},
-      entries(),
-      sortBy(([name]) => name),
-      map(([name, status]) => ({
-        value: name,
-        title: name,
-        description: status.status === "failed" ? "failed" : status.status,
-        footer: <Status enabled={local.mcp.isEnabled(name)} loading={loadingMcp === name} />,
-        category: undefined,
-      })),
-    )
+  const servers = createMemo(() =>
+    pipe(
+      data.location.mcp.server.list() ?? [],
+      sortBy((server) => server.name),
+    ),
+  )
+
+  createEffect(() => {
+    if (focused()) return
+    const first = servers()[0]
+    if (first) setFocused(first.name)
   })
 
-  const actions = createMemo(() => [
-    {
-      command: "dialog.mcp.toggle",
-      title: "toggle",
-      onTrigger: async (option: DialogSelectOption<string>) => {
-        // Prevent toggling while an operation is already in progress
-        if (loading() !== null) return
+  const options = createMemo(() => {
+    const loadingMcp = loading()
+    return servers().map((server) => {
+      const pending = loadingMcp === server.name || server.status.status === "pending"
+      return {
+        value: server.name,
+        title: server.name,
+        footer: <Status status={server.status} loading={pending} />,
+        footerColor: pending ? theme.text.subdued : statusColor(server.status),
+      }
+    })
+  })
 
-        setLoading(option.value)
-        try {
-          await local.mcp.toggle(option.value)
-          // Refresh MCP status from server
-          const status = await sdk.client.mcp.status()
-          if (status.data) {
-            sync.set("mcp", status.data)
-          } else {
-            console.error("Failed to refresh MCP status: no data returned")
-          }
-        } catch (error) {
-          console.error("Failed to toggle MCP:", error)
-        } finally {
-          setLoading(null)
-        }
-      },
-    },
-  ])
+  const focusedServer = createMemo(() => servers().find((server) => server.name === focused()))
+
+  const toggleTitle = createMemo(() => {
+    const status = focusedServer()?.status.status
+    if (status === "connected") return "disconnect"
+    if (status === "failed") return "retry"
+    if (status === "needs_auth") return "sign in"
+    return "connect"
+  })
+
+  const focusedError = createMemo(() => {
+    const server = focusedServer()
+    return server ? statusError(server.status) : undefined
+  })
+
+  const open = (name: string | undefined) => {
+    const server = servers().find((entry) => entry.name === name)
+    if (!server || !statusError(server.status)) return
+    setDetail(server)
+  }
+
+  // Connected servers disconnect; everything else (disabled, failed, needs_auth) retries a
+  // connection. The mcp.status.changed event refreshes the list, so no manual sync is needed.
+  const toggle = (name: string) => {
+    if (loading() !== null) return
+    const server = servers().find((entry) => entry.name === name)
+    if (!server || server.status.status === "pending") return
+    setLoading(name)
+    const current = data.location.default()
+    const input = { server: name, location: { directory: current.directory, workspace: current.workspaceID } }
+    const call = server.status.status === "connected" ? client.api.mcp.disconnect(input) : client.api.mcp.connect(input)
+    void call.catch(toast.error).finally(() => setLoading(null))
+  }
 
   return (
-    <DialogSelect
-      ref={setRef}
-      title="MCPs"
-      options={options()}
-      actions={actions()}
-      onSelect={(_option) => {
-        // Don't close on select, only on escape
-      }}
-    />
+    <box>
+      <Show
+        when={detail()}
+        fallback={
+          <DialogSelect
+            title="MCP servers"
+            options={options()}
+            current={focused()}
+            preserveSelection
+            onMove={(option) => setFocused(option.value as string)}
+            onSelect={(option) => open(option.value as string)}
+            actions={[
+              {
+                title: toggleTitle(),
+                command: "dialog.mcp.toggle",
+                onTrigger: (option) => {
+                  setFocused(option.value as string)
+                  toggle(option.value as string)
+                },
+              },
+            ]}
+            footer={
+              <Show when={focusedError()}>
+                <text fg={theme.text.subdued}>enter to view error</text>
+              </Show>
+            }
+          />
+        }
+      >
+        {(server) => (
+          <DialogMcpError
+            server={server()}
+            onBack={() => {
+              setDetail()
+              dialog.setSize("medium")
+            }}
+          />
+        )}
+      </Show>
+    </box>
+  )
+}
+
+function DialogMcpError(props: { server: McpServer; onBack: () => void }) {
+  const dialog = useDialog()
+  const clipboard = useClipboard()
+  const toast = useToast()
+  const theme = useTheme("elevated")
+  const overlayTheme = useTheme("overlay")
+  const dimensions = useTerminalDimensions()
+  const config = useConfig().data
+  const [copied, setCopied] = createSignal(false)
+  const error = () => statusError(props.server.status) ?? "Unknown MCP connection error"
+  const height = createMemo(() => Math.max(3, Math.floor(dimensions().height / 2) - 5))
+  let scroll: ScrollBoxRenderable | undefined
+
+  onMount(() => dialog.setSize("large"))
+
+  const copy = () => {
+    if (!clipboard.write) return
+    void clipboard
+      .write(error())
+      .then(() => setCopied(true))
+      .catch(toast.error)
+  }
+
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [{ bind: "escape", title: "Back to MCP servers", group: "Dialog", run: props.onBack }],
+  }))
+
+  useKeyboard((event) => {
+    if (event.name === "c") return copy()
+    if (event.name === "up") return scroll?.scrollBy(-1)
+    if (event.name === "down") return scroll?.scrollBy(1)
+    if (event.name === "pageup") return scroll?.scrollBy(-height())
+    if (event.name === "pagedown") return scroll?.scrollBy(height())
+    if (event.name === "home") return scroll?.scrollTo(0)
+    if (event.name === "end" && scroll) return scroll.scrollTo(scroll.scrollHeight)
+  })
+
+  return (
+    <box paddingLeft={4} paddingRight={4} paddingBottom={1} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text attributes={TextAttributes.BOLD} fg={theme.text.default}>
+          MCP server: {props.server.name}
+        </text>
+        <text fg={theme.text.subdued} onMouseUp={props.onBack}>
+          esc back
+        </text>
+      </box>
+      <text fg={theme.text.feedback.error.default}>✗ Failed</text>
+      <box
+        backgroundColor={overlayTheme.background.default}
+        paddingLeft={2}
+        paddingRight={2}
+        paddingTop={1}
+        paddingBottom={1}
+      >
+        <scrollbox
+          ref={(element: ScrollBoxRenderable) => (scroll = element)}
+          height={height()}
+          scrollbarOptions={{ visible: false }}
+          scrollAcceleration={getScrollAcceleration(config)}
+        >
+          <text fg={overlayTheme.text.default} wrapMode="word">
+            {error()}
+          </text>
+        </scrollbox>
+      </box>
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={theme.text.subdued}>↑↓ scroll</text>
+        <text fg={theme.text.subdued} onMouseUp={copy}>
+          {copied() ? "✓ copied" : "c copy details"}
+        </text>
+      </box>
+    </box>
   )
 }

@@ -33,10 +33,6 @@ export function ResizeHandle(props: ResizeHandleProps) {
     e.preventDefault()
     const edge = local.edge ?? (local.direction === "vertical" ? "start" : "end")
     const start = local.direction === "horizontal" ? e.clientX : e.clientY
-    const rtl =
-      local.direction === "horizontal" &&
-      e.currentTarget instanceof Element &&
-      getComputedStyle(e.currentTarget).direction === "rtl"
     const startSize = local.size
     const min = local.min
     const max = local.max
@@ -57,7 +53,7 @@ export function ResizeHandle(props: ResizeHandleProps) {
           ? edge === "end"
             ? pos - start
             : start - pos
-          : (edge === "start") !== rtl
+          : edge === "start"
             ? start - pos
             : pos - start
       current = startSize + delta

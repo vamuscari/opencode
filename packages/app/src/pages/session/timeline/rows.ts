@@ -1,11 +1,9 @@
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
-import type { SessionMessageInfo } from "@opencode-ai/client/promise"
-import { AssistantMessage, Part, SessionStatus, UserMessage } from "@opencode-ai/sdk/v2"
+import type { SessionMessageInfo, SessionStatus } from "@opencode-ai/client/promise"
+import type { AssistantMessage, Part, UserMessage } from "@/types"
 import { groupParts, renderable, type PartGroup } from "@opencode-ai/session-ui/message-part"
 import { TimelineRow, type SummaryDiff } from "./timeline-row"
 import { uniqueSummaryDiffs } from "./summary-diffs"
-import { compareMessages } from "@/utils/session-message"
-import { insertAfterUserMessage } from "./row-reconciliation"
 
 export { TimelineRow, type SummaryDiff } from "./timeline-row"
 
@@ -29,10 +27,6 @@ export type TimelineRowMap = {
   }
   Thinking: { userMessageID: string; reasoningHeading?: string }
   Retry: { userMessageID: string }
-  WorkspaceLifecycle: {
-    userMessageID: string
-    notice: TimelineRow.WorkspaceLifecycle["notice"]
-  }
   DiffSummary: { userMessageID: string; diffs: SummaryDiff[] }
   Error: { userMessageID: string; text: string }
 }
@@ -46,7 +40,6 @@ export namespace Timeline {
     status: SessionStatus["type"],
     inlineComments: boolean,
     projectedUserMessages: UserMessage[],
-    afterUser?: (message: UserMessage) => TimelineRow.TimelineRow[],
   ) {
     const turns: { user: UserMessage; assistants: AssistantMessage[] }[] = []
     const turnByUserID = new Map<string, (typeof turns)[number]>()
@@ -78,19 +71,19 @@ export namespace Timeline {
       turns.push(turn)
       turnByUserID.set(user.id, turn)
     })
+    const latestUserMessageID = turns.at(-1)?.user.id
     projectedUserMessages.forEach((user) => {
       if (turnByUserID.has(user.id)) return
+      if (latestUserMessageID && user.id < latestUserMessageID) return
       const turn = { user, assistants: [] }
-      const index = turns.findIndex((item) => compareMessages(user, item.user) < 0)
-      if (index < 0) turns.push(turn)
-      if (index >= 0) turns.splice(index, 0, turn)
+      turns.push(turn)
       turnByUserID.set(user.id, turn)
     })
     const activeMessageID = turns.at(-1)?.user.id
     return {
       activeMessageID,
-      rows: turns.flatMap((turn, index) => {
-        const rows = constructMessageRows(
+      rows: turns.flatMap((turn, index) =>
+        constructMessageRows(
           turn.user,
           getMessageParts,
           turn.assistants,
@@ -99,10 +92,8 @@ export namespace Timeline {
           status,
           turn.user.id === activeMessageID,
           inlineComments,
-        )
-        if (!afterUser) return rows
-        return insertAfterUserMessage(rows, afterUser(turn.user))
-      }),
+        ),
+      ),
     }
   }
 
@@ -125,8 +116,7 @@ export namespace Timeline {
     const compaction = userParts.some((p) => p.type === "compaction")
     const interruptedMessageIndex = assistantMessages.findIndex((m) => m.error?.name === "MessageAbortedError")
     const interrupted = interruptedMessageIndex !== -1
-    const latestError = assistantMessages.at(-1)?.error
-    const error = latestError?.name === "MessageAbortedError" ? undefined : latestError
+    const error = assistantMessages.find((m) => m.error && m.error.name !== "MessageAbortedError")?.error
 
     const assistantPartRefs = assistantMessages.flatMap((message, messageIndex) =>
       getMessageParts(message.id)
@@ -225,7 +215,7 @@ export namespace Timeline {
     }
 
     if (error) {
-      const data = error.data?.message
+      const data = error.data && "message" in error.data ? error.data.message : undefined
       rows.push(
         new TimelineRow.Error({
           userMessageID: userMessage.id,

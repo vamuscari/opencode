@@ -2,22 +2,19 @@ import { Tooltip as KobalteTooltip } from "@kobalte/core/tooltip"
 import { createEffect, Match, onCleanup, splitProps, Switch, type JSX } from "solid-js"
 import type { ComponentProps } from "solid-js"
 import { createStore } from "solid-js/store"
-import { closeTooltipIntent, openTooltipIntent, resetTooltipIntent } from "./tooltip-intent"
 import "./tooltip-v2.css"
 
-export interface TooltipV2Props extends Omit<ComponentProps<typeof KobalteTooltip>, "openDelay"> {
+export interface TooltipV2Props extends ComponentProps<typeof KobalteTooltip> {
   value: JSX.Element
   class?: string
   contentClass?: string
   contentStyle?: JSX.CSSProperties
   inactive?: boolean
-  delay?: "standard" | "intent"
   forceOpen?: boolean
 }
 
 export function TooltipV2(props: TooltipV2Props) {
   let ref: HTMLDivElement | undefined
-  let cancelIntent: (() => void) | undefined
   const [state, setState] = createStore({
     open: false,
     block: false,
@@ -29,36 +26,17 @@ export function TooltipV2(props: TooltipV2Props) {
     "contentClass",
     "contentStyle",
     "inactive",
-    "delay",
     "forceOpen",
     "ignoreSafeArea",
     "value",
   ])
 
-  const controlled = () => local.forceOpen !== undefined
+  const close = () => setState("open", false)
+
   const inside = () => {
     const active = document.activeElement
     if (!ref || !active) return false
     return ref.contains(active)
-  }
-
-  const close = () => {
-    cancelIntent?.()
-    cancelIntent = undefined
-    if (local.delay === "intent") closeTooltipIntent()
-    setState("open", false)
-  }
-
-  const show = () => {
-    if (local.delay !== "intent" || inside()) {
-      setState("open", true)
-      return
-    }
-    if (cancelIntent) return
-    cancelIntent = openTooltipIntent(() => {
-      cancelIntent = undefined
-      setState("open", true)
-    })
   }
 
   const drop = (expand = state.expand) => {
@@ -102,11 +80,6 @@ export function TooltipV2(props: TooltipV2Props) {
     onCleanup(() => obs.disconnect())
   })
 
-  onCleanup(() => {
-    cancelIntent?.()
-    if (local.delay === "intent") resetTooltipIntent()
-  })
-
   let justClickedTrigger = false
 
   return (
@@ -115,24 +88,20 @@ export function TooltipV2(props: TooltipV2Props) {
       <Match when={true}>
         <KobalteTooltip
           gutter={4}
-          openDelay={local.delay === "intent" ? 0 : 400}
-          skipDelayDuration={local.delay === "intent" ? 0 : 300}
+          openDelay={400}
+          skipDelayDuration={300}
           {...others}
           closeDelay={0}
           ignoreSafeArea={local.ignoreSafeArea ?? true}
-          open={controlled() ? local.forceOpen : state.open}
+          open={local.forceOpen || state.open}
           onOpenChange={(open) => {
-            if (controlled()) return
+            if (local.forceOpen) return
             if (state.block && open) return
             if (justClickedTrigger) {
               justClickedTrigger = false
               return
             }
-            if (open) {
-              show()
-              return
-            }
-            close()
+            setState("open", open)
           }}
         >
           <KobalteTooltip.Trigger

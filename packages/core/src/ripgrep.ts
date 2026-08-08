@@ -3,8 +3,8 @@ export * as Ripgrep from "./ripgrep"
 import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { Entry, Match } from "@opencode-ai/schema/filesystem"
-import { makeGlobalNode } from "./effect/app-node"
-import { AppProcess, collectStream, waitForAbort } from "./process"
+import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
+import { AppProcess, collectStream, waitForAbort } from "@opencode-ai/util/process"
 import { NonNegativeInt, PositiveInt, RelativePath } from "./schema"
 import { RipgrepBinary } from "./ripgrep/binary"
 
@@ -16,7 +16,6 @@ import { RipgrepBinary } from "./ripgrep/binary"
  */
 
 const ERROR_BYTES = 8 * 1024
-const MAX_RECORD_BYTES = 64 * 1024
 const MAX_SUBMATCHES = 100
 
 const RawMatch = Schema.Struct({
@@ -35,6 +34,7 @@ const RawMatch = Schema.Struct({
     ),
   }),
 })
+const decodeJsonRecord = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)
 
 type RawMatchData = (typeof RawMatch.Type)["data"]
 
@@ -52,6 +52,7 @@ export interface FindInput {
   readonly cwd: string
   readonly pattern: string
   readonly limit: number
+  readonly exclude?: readonly string[]
   readonly hidden?: boolean
   readonly follow?: boolean
   readonly signal?: AbortSignal
@@ -82,7 +83,7 @@ export interface Interface {
   readonly grep: (input: GrepInput) => Effect.Effect<readonly Match[], Error | InvalidPatternError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Ripgrep") {}
+export class Service extends Context.Service<Service, Interface>()("@opencode/Ripgrep") {}
 
 const failure = (message: string, cause?: unknown) => new Error({ message, cause })
 
@@ -195,6 +196,7 @@ const layer = Layer.effect(
             ...(input.hidden ? ["--hidden"] : []),
             ...(input.follow ? ["--follow"] : []),
             ...(input.pattern === "*" ? [] : [`--glob=${input.pattern}`]),
+            ...(input.exclude ?? []).map((pattern) => `--glob=!${pattern}`),
             "--glob=!**/.git/**",
             ".",
           ],
@@ -230,13 +232,8 @@ const layer = Layer.effect(
             input.file ?? ".",
           ],
           parse: (line) =>
-            (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES
-              ? Effect.fail(failure(`Ripgrep JSON record exceeded ${MAX_RECORD_BYTES} bytes`))
-              : Effect.try({
-                  try: () => JSON.parse(line) as unknown,
-                  catch: (cause) => failure("Invalid ripgrep JSON output", cause),
-                })
-            ).pipe(
+            decodeJsonRecord(line).pipe(
+              Effect.mapError((cause) => failure("Invalid ripgrep JSON output", cause)),
               Effect.flatMap((json) => {
                 if (!json || typeof json !== "object" || !("type" in json) || json.type !== "match")
                   return Effect.succeed(undefined)

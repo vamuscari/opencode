@@ -1,6 +1,6 @@
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
-import { Icon } from "@opencode-ai/ui/v2/icon"
+import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { WordmarkV2 } from "@opencode-ai/ui/v2/wordmark-v2"
 import { Show, createMemo, createSignal, type Accessor } from "solid-js"
@@ -31,15 +31,6 @@ export function NewSessionView(props: {
   project: PromptProjectController
   workspace: NewSessionWorkspaceController
 }) {
-  const [onboarding, setOnboarding, , onboardingReady] = persisted(
-    Persist.global("workspace-onboarding"),
-    createStore({ used: false }),
-  )
-  const select = (value: string) => {
-    props.workspace.selection.set(value)
-    if (value !== "main") setOnboarding("used", true)
-  }
-
   return (
     <div class="@container relative flex flex-col min-h-0 h-full flex-1">
       <div
@@ -50,7 +41,7 @@ export function NewSessionView(props: {
           <div class={NEW_SESSION_CONTENT_WIDTH}>
             <WordmarkV2 class="h-auto w-full text-v2-background-bg-inverse" />
             <div class="mt-8 flex flex-col gap-8">
-              <PromptInputV2Composer controller={props.input} accentSubmit={props.workspace.selection.workspace()} />
+              <PromptInputV2Composer controller={props.input} />
               <Show when={props.project.empty()}>
                 <PromptProjectAddButton controller={props.project} />
               </Show>
@@ -68,10 +59,8 @@ export function NewSessionView(props: {
                       projectRoot={props.workspace.project.root()}
                       workspaces={props.workspace.project.workspaces()}
                       branch={props.workspace.bar.branch()}
-                      onboarding={onboardingReady() && !onboarding.used}
-                      onChange={select}
+                      onChange={props.workspace.selection.set}
                       onDone={props.input.restoreFocus}
-                      onViewAll={props.workspace.project.openAll}
                     />
                   </Show>
                 </div>
@@ -89,9 +78,9 @@ export function NewSessionStatus(props: { mount: Accessor<HTMLElement | null>; v
   const language = useLanguage()
 
   return (
-    <Show when={props.mount()} keyed>
+    <Show when={props.mount()}>
       {(mount) => (
-        <Portal mount={mount}>
+        <Portal mount={mount()}>
           <Show when={props.visible()}>
             <Tooltip placement="bottom" value={language.t("status.popover.trigger")}>
               <StatusPopoverV2 />
@@ -148,13 +137,13 @@ function ProviderTip() {
           >
             <span class="truncate">{language.t("home.providerTip")}</span>
             <span class="flex size-6 shrink-0 items-center justify-center" aria-hidden="true">
-              <Icon name="chevron-down" size="small" class="-rotate-90" />
+              <IconV2 name="chevron-down" size="small" class="-rotate-90" />
             </span>
           </button>
           <TooltipV2
             class="hover-reveal absolute left-full top-0 flex h-6 w-7 items-center justify-end delay-0 duration-0 group-hover/provider-tip:delay-[250ms] group-hover/provider-tip:duration-150 group-hover/provider-tip:opacity-100 focus-within:delay-0 focus-within:duration-0 focus-within:opacity-100"
             placement="top"
-            delay="intent"
+            openDelay={1000}
             value={language.t("common.dismiss")}
           >
             <button
@@ -163,7 +152,7 @@ function ProviderTip() {
               aria-label={language.t("common.dismiss")}
               onClick={() => setPersistedState("dismissedAt", Date.now())}
             >
-              <Icon name="xmark-small" />
+              <IconV2 name="xmark-small" />
             </button>
           </TooltipV2>
         </div>

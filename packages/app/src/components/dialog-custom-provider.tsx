@@ -8,7 +8,7 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@/utils/toast"
 import { batch, For } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import { ExternalLink } from "@/components/external-link"
+import { Link } from "@/components/link"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
@@ -130,26 +130,9 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
   }
 
   const saveMutation = useMutation(() => ({
-    mutationFn: async (result: NonNullable<ReturnType<typeof validate>>) => {
-      if ((await serverSDK().protocol) !== "v1") throw new Error(language.t("provider.custom.unavailable"))
-      const disabledProviders = serverSync().data.config.disabled_providers ?? []
-      const nextDisabled = disabledProviders.filter((id) => id !== result.providerID)
-
-      if (result.key) {
-        await serverSDK().client.auth.set({
-          providerID: result.providerID,
-          auth: {
-            type: "api",
-            key: result.key,
-          },
-        })
-      }
-
-      await serverSync().updateConfig({
-        provider: { [result.providerID]: result.config },
-        disabled_providers: nextDisabled,
-      })
-      return result
+    mutationFn: async (result: NonNullable<ReturnType<typeof validate>>): Promise<typeof result> => {
+      // TODO: Restore custom providers when V2 exposes config and arbitrary credential APIs.
+      throw new Error(`Custom provider ${result.providerID} is unavailable`)
     },
     onSuccess: (result) => {
       dialog.close()
@@ -185,9 +168,9 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
       <form onSubmit={save} class="px-2.5 pb-6 flex flex-col gap-6">
         <p class="text-14-regular text-text-base">
           {language.t("provider.custom.description.prefix")}
-          <ExternalLink href="https://opencode.ai/docs/providers/#custom-provider" tabIndex={-1}>
+          <Link href="https://opencode.ai/docs/providers/#custom-provider" tabIndex={-1}>
             {language.t("provider.custom.description.link")}
-          </ExternalLink>
+          </Link>
           {language.t("provider.custom.description.suffix")}
         </p>
 

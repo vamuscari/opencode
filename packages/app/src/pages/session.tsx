@@ -1,4 +1,5 @@
-import type { FilePart, Project, UserMessage, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type { FilePart, Project, UserMessage } from "@/types"
+import type { FileDiffInfo } from "@opencode-ai/client/promise"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createQuery, skipToken, useMutation, useQueryClient } from "@tanstack/solid-query"
@@ -37,7 +38,6 @@ import { createAutoScroll } from "@opencode-ai/ui/hooks"
 import { previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-bridge"
 import { Button } from "@opencode-ai/ui/button"
 import { showToast } from "@/utils/toast"
-import { isWorkspaceDirectory } from "@/utils/workspace"
 import { base64Encode, checksum } from "@opencode-ai/core/util/encode"
 import { useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
@@ -101,7 +101,6 @@ import { Persist, persisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { formatServerError, isLocalSessionNotFoundError, isSessionNotFoundError } from "@/utils/server-errors"
 import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
-import { canMoveSessionToWorkspace, WorkspaceOperation } from "@/utils/workspace-operation"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
@@ -161,7 +160,7 @@ export function SessionPage() {
 export function TargetSessionRouteContent() {
   const params = useParams<{ serverKey: string; id: string }>()
   const serverSync = useServerSync()
-  const directory = createMemo(() => serverSync().session.lineage.peek(params.id)?.session.directory)
+  const directory = createMemo(() => serverSync().session.lineage.peek(params.id)?.session.location.directory)
   return (
     // Settings must keep the target-server SDK, sync, and models context and remain registered
     // when session content falls back to the route error boundary.
@@ -254,7 +253,7 @@ function ResolvedTargetSessionRoute() {
     () => params.id,
     () => sync().session.lineage,
   )
-  const directory = createMemo(() => current()?.session.directory)
+  const directory = createMemo(() => current()?.session.location.directory)
   const targetDirectory = () => directory()!
 
   createEffect(() => {
@@ -534,7 +533,6 @@ export default function Page() {
   }
 
   const info = createMemo(() => (params.id ? sync().session.get(params.id) : undefined))
-  const workspaceSession = createMemo(() => isWorkspaceDirectory(sync().project, info()?.directory ?? sdk().directory))
   const isChildSession = createMemo(() => !!info()?.parentID)
   const canReview = createMemo(() => !!sync().project)
   const reviewTab = createMemo(() => isDesktop())
@@ -603,7 +601,6 @@ export default function Page() {
   const [store, setStore] = createStore({
     ...sessionViewState(),
     newSessionWorktree: "main",
-    sessionDetailsOpen: false,
     deferRender: false,
   })
 
@@ -694,12 +691,8 @@ export default function Page() {
       queryFn: mode
         ? () =>
             sdk()
-              .api.vcs.diff({
-                location: { directory: sdk().directory },
-                mode: mode === "git" ? "working" : mode,
-                context: 0,
-              })
-              .then((result) => result.data.map((diff) => ({ ...diff, patch: "" })))
+              .api.vcs.diff({ location: { directory: sdk().directory }, mode: mode === "git" ? "working" : mode })
+              .then((result) => result.data)
               .catch((error) => {
                 console.debug("[session-review] failed to load vcs diff", { mode, error })
                 return []
@@ -707,19 +700,6 @@ export default function Page() {
         : skipToken,
     }
   })
-  const sessionDetailsQuery = createQuery(() => ({
-    queryKey: [...vcsKey(), "git"] as const,
-    enabled: store.sessionDetailsOpen && sync().project?.vcs === "git",
-    queryFn: () =>
-      sdk()
-        .api.vcs.diff({ location: { directory: sdk().directory }, mode: "working" })
-        .then((result) => result.data)
-        .catch((error) => {
-          console.debug("[session-review] failed to load session details diff", { error })
-          return []
-        }),
-  }))
-  const sessionDetailsDiffs = () => (sessionDetailsQuery.isFetched ? (sessionDetailsQuery.data ?? []) : [])
   const refreshVcs = debounce(() => void queryClient.invalidateQueries({ queryKey: vcsKey() }), 100)
   const reviewDiffs = () => {
     if (reviewMode() === "git" || reviewMode() === "branch")
@@ -739,13 +719,13 @@ export default function Page() {
     if (reviewMode() === "git" || reviewMode() === "branch") return !vcsQuery.isPending
     return true
   }
-  const loadReviewDiff = async (file: string, version?: number): Promise<VcsFileDiff | undefined> => {
+  const loadReviewDiff = async (file: string, version?: number): Promise<FileDiffInfo | undefined> => {
     const mode = vcsMode()
     if (!mode) return
     const root = reviewRootDirectory(sync().project?.worktree ?? sdk().directory)
     const directory = reviewDiffDirectory(root, file)
     const source = reviewDiffs().find((diff) => diff.file === file)
-    const valid = (diff: VcsFileDiff | undefined) => {
+    const valid = (diff: FileDiffInfo | undefined) => {
       if (!diff || !source) return
       if (diff.additions !== source.additions || diff.deletions !== source.deletions) return
       if (reviewDiffNeedsLoad(diff)) return
@@ -868,11 +848,8 @@ export default function Page() {
   }
 
   const gitMutation = useMutation(() => ({
-    mutationFn: () => sdk().client.project.initGit(),
-    onSuccess: (x) => {
-      if (!x.data) return
-      upsert(x.data)
-    },
+    // TODO: Restore Git initialization when the V2 client exposes this operation.
+    mutationFn: async () => Promise.reject(new Error("Git initialization is unavailable")),
     onError: (err) => {
       showToast({
         variant: "error",
@@ -1238,11 +1215,7 @@ export default function Page() {
           {language.t("session.review.noVcs.createGit.description")}
         </div>
       </div>
-      <Button size="large" disabled={gitMutation.isPending} onClick={initGit}>
-        {gitMutation.isPending
-          ? language.t("session.review.noVcs.createGit.actionLoading")
-          : language.t("session.review.noVcs.createGit.action")}
-      </Button>
+      {/* TODO: Restore the init button when the V2 client exposes Git initialization. */}
     </div>
   )
 
@@ -1275,7 +1248,8 @@ export default function Page() {
       return <div class="px-6 py-4 text-text-weak">{language.t("session.review.loadingChanges")}</div>
     }
     if (reviewMode() === "turn" && nogit()) {
-      return <SessionReviewEmptyNoGitV2 pending={gitMutation.isPending} onInitGit={initGit} />
+      // TODO: Restore SessionReviewEmptyNoGitV2 when the V2 client exposes Git initialization.
+      return empty(language.t("session.review.noVcs.createGit.description"))
     }
     return <SessionReviewEmptyChangesV2 />
   }
@@ -1722,8 +1696,6 @@ export default function Page() {
   }
 
   const busy = (sessionID: string) => sync().data.session_working(sessionID)
-  const workspaceOperationPending = (sessionID: string) =>
-    WorkspaceOperation.get(serverSDK().scope, sessionID)?.status === "pending"
 
   const queuedFollowups = createMemo(() => {
     const id = params.id
@@ -1737,20 +1709,8 @@ export default function Page() {
     return followup.edit[id]
   })
 
-  const workspaceMoveEligible = createMemo(() => {
-    const id = params.id
-    if (!id) return false
-    return canMoveSessionToWorkspace({
-      queued: followup.items[id]?.length ?? 0,
-      failed: !!followup.failed[id],
-      paused: !!followup.paused[id],
-      editing: !!followup.edit[id],
-    })
-  })
-
   const followupMutation = useMutation(() => ({
     mutationFn: async (input: { sessionID: string; id: string; manual?: boolean }) => {
-      if (workspaceOperationPending(input.sessionID)) return
       const owner = sessionOwnership.capture()
       const item = (followup.items[input.sessionID] ?? []).find((entry) => entry.id === input.id)
       if (!item) return
@@ -1760,9 +1720,9 @@ export default function Page() {
 
       const ok = await sendFollowupDraft({
         api: sdk().api.session,
-        scope: serverSDK().scope,
         sync: sync(),
         serverSync: serverSync(),
+        session: () => sync().session.get(input.sessionID),
         draft: item,
         optimisticBusy: item.sessionDirectory === sdk().directory,
       }).catch((err) => {
@@ -1823,7 +1783,6 @@ export default function Page() {
 
   const sendFollowup = (sessionID: string, id: string, opts?: { manual?: boolean }) => {
     if (sync().session.get(sessionID)?.parentID) return Promise.resolve()
-    if (workspaceOperationPending(sessionID)) return Promise.resolve()
     const item = (followup.items[sessionID] ?? []).find((entry) => entry.id === id)
     if (!item) return Promise.resolve()
     if (followupBusy(sessionID)) return Promise.resolve()
@@ -1863,7 +1822,6 @@ export default function Page() {
 
   const revertMutation = useMutation(() => ({
     mutationFn: async (input: { sessionID: string; messageID: string }) => {
-      if (workspaceOperationPending(input.sessionID)) return
       const session = sdk().api.session
       const target = sync()
       const last = target.session.get(input.sessionID)?.revert
@@ -1886,13 +1844,10 @@ export default function Page() {
     mutationFn: async (id: string) => {
       const sessionID = params.id
       if (!sessionID) return
-      if (workspaceOperationPending(sessionID)) return
 
       const session = sdk().api.session
       const target = sync()
-      const index = userMessages().findIndex((item) => item.id === id)
-      if (index < 0) return
-      const next = userMessages()[index + 1]
+      const next = userMessages().find((item) => item.id > id)
       const last = target.session.get(sessionID)?.revert
 
       await runPromptRollbackMutation({
@@ -1916,10 +1871,7 @@ export default function Page() {
     },
   }))
 
-  const reverting = createMemo(() => {
-    const id = params.id
-    return revertMutation.isPending || restoreMutation.isPending || (!!id && workspaceOperationPending(id))
-  })
+  const reverting = createMemo(() => revertMutation.isPending || restoreMutation.isPending)
   const restoring = createMemo(() => (restoreMutation.isPending ? restoreMutation.variables : undefined))
 
   const revert = (input: { sessionID: string; messageID: string }) => {
@@ -1935,10 +1887,8 @@ export default function Page() {
   const rolled = createMemo(() => {
     const id = revertMessageID()
     if (!id) return []
-    const index = userMessages().findIndex((item) => item.id === id)
-    if (index < 0) return []
     return userMessages()
-      .slice(index)
+      .filter((item) => item.id >= id)
       .map((item) => ({ id: item.id, text: line(item.id) }))
   })
 
@@ -1979,7 +1929,6 @@ export default function Page() {
     if (isChildSession()) return
     if (composer.blocked()) return
     if (busy(sessionID)) return
-    if (workspaceOperationPending(sessionID)) return
 
     void sendFollowup(sessionID, item.id)
   })
@@ -2087,7 +2036,7 @@ export default function Page() {
         >
           {hasReview()
             ? language.t("session.review.filesChanged", { count: reviewCount() })
-            : language.plural("session.review.change", 0)}
+            : language.t("session.review.change.other")}
         </Tabs.Trigger>
       </Tabs.List>
     </Tabs>
@@ -2150,9 +2099,6 @@ export default function Page() {
                     if (root) scheduleScrollState(root)
                   }}
                   userMessages={visibleUserMessages()}
-                  diffs={sessionDetailsDiffs}
-                  workspaceMoveEligible={workspaceMoveEligible()}
-                  onSummaryOpenChange={(open) => setStore("sessionDetailsOpen", open)}
                   setHistoryAnchor={(handlers) => {
                     captureHistoryAnchor = handlers.capture
                     restoreHistoryAnchor = handlers.restore
@@ -2280,9 +2226,7 @@ export default function Page() {
                         setFollowup("paused", id, true)
                       },
                     })
-                    return (
-                      <PromptInputV2Composer controller={controller} borderUnderlay accentSubmit={workspaceSession()} />
-                    )
+                    return <PromptInputV2Composer controller={controller} borderUnderlay />
                   }}
                 </Show>
               }
@@ -2334,7 +2278,7 @@ export default function Page() {
             <div onPointerDown={() => size.start()}>
               <ResizeHandle
                 classList={{
-                  "-end-1": settings.general.newLayoutDesigns(),
+                  "-right-1": settings.general.newLayoutDesigns(),
                 }}
                 direction="horizontal"
                 size={sessionPanelResizedWidth()}

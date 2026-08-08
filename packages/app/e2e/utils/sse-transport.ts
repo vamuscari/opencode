@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test"
 export type SseConnectionRecord = {
   id: number
   url: string
-  path: "/global/event" | "/event" | "/api/event"
+  path: "/api/event"
   headers: Record<string, string>
   openedAt: number
   endedAt?: number
@@ -29,38 +29,23 @@ export type SseEventOptions = {
 
 export type SseTransport<T> = {
   server: string
-  waitForConnection(options?: {
-    after?: number
-    timeout?: number
-    path?: SseConnectionRecord["path"]
-  }): Promise<SseConnectionRecord>
-  send(payload: T, options?: SseEventOptions, path?: SseConnectionRecord["path"]): Promise<SseDeliveryAcknowledgement>
+  waitForConnection(options?: { after?: number; timeout?: number }): Promise<SseConnectionRecord>
+  send(payload: T, options?: SseEventOptions): Promise<SseDeliveryAcknowledgement>
   burst(payloads: readonly T[], options?: readonly SseEventOptions[]): Promise<SseDeliveryAcknowledgement[]>
   split(payload: T, cuts: readonly number[], options?: SseEventOptions): Promise<SseDeliveryAcknowledgement>
   heartbeat(options?: SseEventOptions): Promise<SseDeliveryAcknowledgement>
   writeRaw(value: string | Uint8Array, cuts?: readonly number[], marker?: string): Promise<SseDeliveryAcknowledgement>
   close(): Promise<void>
   disconnect(message?: string): Promise<void>
-  error(message?: string, path?: SseConnectionRecord["path"]): Promise<void>
+  error(message?: string): Promise<void>
   connections(): Promise<SseConnectionRecord[]>
   acknowledgements(): Promise<SseDeliveryAcknowledgement[]>
 }
 
 type BrowserCommand<T> =
-  | {
-      type: "send"
-      deliveries: { payload: T; options?: SseEventOptions }[]
-      burst: boolean
-      cuts?: number[]
-      path?: SseConnectionRecord["path"]
-    }
+  | { type: "send"; deliveries: { payload: T; options?: SseEventOptions }[]; burst: boolean; cuts?: number[] }
   | { type: "raw"; bytes: number[]; cuts?: number[]; marker?: string }
-  | {
-      type: "end"
-      mode: "close" | "disconnect" | "error"
-      message?: string
-      path?: SseConnectionRecord["path"]
-    }
+  | { type: "end"; mode: "close" | "disconnect" | "error"; message?: string }
   | { type: "connections" }
   | { type: "acknowledgements" }
 
@@ -88,8 +73,7 @@ export async function installSseTransport<T>(
       let nextConnectionID = 0
       let nextDeliveryID = 0
 
-      const current = (path?: SseConnectionRecord["path"]) =>
-        connections.findLast((connection) => connection.endedAt === undefined && (!path || connection.path === path))
+      const current = () => connections.findLast((connection) => connection.endedAt === undefined)
       const chunks = (bytes: Uint8Array, cuts?: readonly number[]) => {
         const boundaries = [...new Set(cuts ?? [])]
           .filter((cut) => Number.isInteger(cut) && cut > 0 && cut < bytes.byteLength)
@@ -141,8 +125,8 @@ export async function installSseTransport<T>(
         acknowledgements.push(acknowledgement)
         return acknowledgement
       }
-      const end = (mode: "close" | "disconnect" | "error", message?: string, path?: SseConnectionRecord["path"]) => {
-        const connection = current(path)
+      const end = (mode: "close" | "disconnect" | "error", message?: string) => {
+        const connection = current()
         if (!connection) throw new Error("SSE transport has no active connection")
         connection.endedAt = performance.now()
         connection.endedBy = mode
@@ -162,8 +146,8 @@ export async function installSseTransport<T>(
         if (input.type === "connections")
           return connections.map(({ controller: _controller, ...connection }) => connection)
         if (input.type === "acknowledgements") return acknowledgements
-        if (input.type === "end") return end(input.mode, input.message, input.path)
-        const connection = current(input.type === "send" ? input.path : undefined)
+        if (input.type === "end") return end(input.mode, input.message)
+        const connection = current()
         if (!connection) throw new Error("SSE transport has no active connection")
         if (input.type === "raw") {
           marker(input.marker)
@@ -190,10 +174,7 @@ export async function installSseTransport<T>(
       const fetch = (input: RequestInfo | URL, init?: RequestInit) => {
         const request = new Request(input, init)
         const url = new URL(request.url)
-        if (
-          url.origin !== server ||
-          (url.pathname !== "/global/event" && url.pathname !== "/event" && url.pathname !== "/api/event")
-        )
+        if (url.origin !== server || url.pathname !== "/api/event")
           return originalFetch(request)
 
         const id = ++nextConnectionID
@@ -209,18 +190,9 @@ export async function installSseTransport<T>(
             record.controller = controller
             connections.push(record)
             if (retry !== undefined) controller.enqueue(encoder.encode(`retry: ${retry}\n\n`))
-            if (url.pathname === "/api/event")
-              controller.enqueue(
-                encoder.encode(frame({ id: `evt_mock_connected_${id}`, type: "server.connected", data: {} })),
-              )
-            if (url.pathname === "/global/event")
-              controller.enqueue(
-                encoder.encode(
-                  frame({
-                    payload: { id: `evt_mock_connected_${id}`, type: "server.connected", properties: {} },
-                  }),
-                ),
-              )
+            controller.enqueue(
+              encoder.encode(frame({ id: `evt_mock_connected_${id}`, type: "server.connected", data: {} })),
+            )
             request.signal.addEventListener(
               "abort",
               () => {
@@ -263,29 +235,21 @@ export async function installSseTransport<T>(
   return {
     server,
     async waitForConnection(input = {}) {
-      const connection = await page.waitForFunction(
-        ({ after, path }) => {
+      await page.waitForFunction(
+        (after) => {
           const transport = (window as BrowserTransport).__testSseTransport
           const connections = transport?.command({ type: "connections" }) as SseConnectionRecord[] | undefined
-          return connections?.findLast(
-            (connection) =>
-              connection.id > after && connection.endedAt === undefined && (!path || connection.path === path),
-          )
+          return connections?.some((connection) => connection.id > after)
         },
-        { after: input.after ?? 0, path: input.path },
+        input.after ?? 0,
         { timeout: input.timeout },
       )
-      let result: SseConnectionRecord | undefined
-      try {
-        result = await connection.jsonValue()
-      } finally {
-        await connection.dispose()
-      }
-      if (!result) throw new Error("SSE transport connection disappeared while waiting")
-      return result
+      return (await command<SseConnectionRecord[]>({ type: "connections" })).findLast(
+        (connection) => connection.id > (input.after ?? 0),
+      )!
     },
-    send(payload, eventOptions, path) {
-      return command({ type: "send", deliveries: [{ payload, options: eventOptions }], burst: false, path })
+    send(payload, eventOptions) {
+      return command({ type: "send", deliveries: [{ payload, options: eventOptions }], burst: false })
     },
     burst(payloads, eventOptions = []) {
       return command({
@@ -323,8 +287,8 @@ export async function installSseTransport<T>(
     disconnect(message) {
       return command({ type: "end", mode: "disconnect", message })
     },
-    error(message, path) {
-      return command({ type: "end", mode: "error", message, path })
+    error(message) {
+      return command({ type: "end", mode: "error", message })
     },
     connections() {
       return command({ type: "connections" })

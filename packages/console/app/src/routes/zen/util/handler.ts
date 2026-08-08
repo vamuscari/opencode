@@ -136,17 +136,16 @@ export async function handler(
             Workspace.setDefaultRegion({ country: countryFromRequest(input.request) }),
           )
         })()
-    if (
-      authInfo &&
-      opts.modelList === "lite" &&
-      modelInfo.id === "deepseek-v4-flash" &&
-      !allowedRegions?.includes("cn")
-    )
-      throw new RegionError(
-        t("zen.api.error.regionNotAllowed", {
-          consoleGoUrl: `https://opencode.ai/workspace/${authInfo.workspaceID}/go`,
-        }),
-      )
+    /*
+    if (true) {
+      if (!allowedRegions?.includes("unavailable"))
+        throw new RegionError(
+          t("zen.api.error.regionNotAllowed", {
+            consoleGoUrl: `https://opencode.ai/workspace/${authInfo.workspaceID}/go`,
+          }),
+        )
+    }
+    */
     const stickyId = sessionId ? sessionId : (authInfo?.workspaceID ?? ip)
     const stickyTracker = createStickyTracker(modelInfo.id, modelInfo.stickyProvider, stickyId)
     const stickyProvider = await stickyTracker?.get()
@@ -197,9 +196,7 @@ export async function handler(
                   if (Array.isArray(v)) return [[k, v]]
                   if (typeof v === "object") return [[k, replacer(v)]]
                   if (typeof v === "string") {
-                    if (v === "$workspace") return authInfo?.workspaceID ? [[k, authInfo.workspaceID]] : []
-                    if (v === "$org")
-                      return authInfo?.workspaceID ? [[k, authInfo.workspaceID.replace("wrk_", "org_")]] : []
+                    if (v === "$workspace") return authInfo?.workspaceID ? [[k, authInfo?.workspaceID]] : []
                     if (v === "$user") return stickyId ? [[k, stickyId]] : []
                     if (v.startsWith("$header.")) {
                       const headerValue = input.request.headers.get(v.slice(8))
@@ -215,11 +212,7 @@ export async function handler(
       )
       logger.debug("REQUEST URL: " + reqUrl)
       logger.debug("REQUEST: " + reqBody.substring(0, 300) + "...")
-      const isNewInference =
-        providerInfo.id.startsWith("console.") ||
-        providerInfo.id.startsWith("console-go.") ||
-        providerInfo.id.startsWith("inf.") ||
-        providerInfo.id.startsWith("inf-go.")
+      const isNewInference = providerInfo.id.startsWith("console.") || providerInfo.id.startsWith("console-go.")
       const res = await fetchWithRetryableStatus(
         reqUrl,
         {
@@ -236,10 +229,6 @@ export async function handler(
               if (v === "$project") return headers.set(k, projectId)
               if (v === "$workspace") {
                 if (authInfo?.workspaceID) headers.set(k, authInfo.workspaceID)
-                return
-              }
-              if (v === "$org") {
-                if (authInfo?.workspaceID) headers.set(k, authInfo.workspaceID.replace("wrk_", "org_"))
                 return
               }
               headers.set(k, v)

@@ -460,7 +460,7 @@ function ModelSelectorPopoverV2View(props: {
                               class="w-full"
                               placement="right-start"
                               gutter={6}
-                              delay="intent"
+                              openDelay={0}
                               value={
                                 <ModelTooltip
                                   model={item}

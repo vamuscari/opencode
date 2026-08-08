@@ -34,10 +34,6 @@ describe("WSL desktop connections", () => {
     ])
   })
 
-  test("uses the renderer translation for the WSL connection label", () => {
-    expect(readyWslConnections(state("ready"), "Translated WSL")[0]?.label).toBe("Translated WSL")
-  })
-
   test("does not block desktop startup on a configured WSL default", () => {
     const key = "wsl:Debian"
     expect(availableStartupServer(key, undefined)).toBe("sidecar")

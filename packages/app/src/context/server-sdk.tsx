@@ -1,28 +1,22 @@
 import type { OpenCodeEvent } from "@opencode-ai/client/promise"
-import type { Event } from "@opencode-ai/sdk/v2/client"
+import type { Event } from "@/types"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { makeEventListener } from "@solid-primitives/event-listener"
-import { type Accessor, batch, createMemo, createResource, onCleanup, onMount } from "solid-js"
-import { createApiForServer, createSdkForServer, type ServerApi } from "@/utils/server"
+import { type Accessor, batch, createMemo, onCleanup, onMount } from "solid-js"
+import { createApiForServer, type ServerApi } from "@/utils/server"
 import { useLanguage } from "./language"
 import { usePlatform } from "./platform"
 import { ServerConnection, useServer } from "./server"
 import { createRefCountMap } from "@/utils/refcount"
 import { useGlobal } from "./global"
 import { ServerScope } from "@/utils/server-scope"
-import { detectServerProtocol, type ServerProtocol } from "@/utils/server-protocol"
-import { createCompatibleApi, type CompatibleApi } from "@/utils/server-compat"
-import { Worktree } from "@/utils/worktree"
-import { WorkspaceOperation } from "@/utils/workspace-operation"
-import { decodeVcsDiff } from "@/utils/vcs-diff-decoder"
-import { decodeSessionList } from "./session-message-decoder"
 
 const isAbortError = (error: unknown) =>
   error !== null && typeof error === "object" && "name" in error && error.name === "AbortError"
 
 const isStreamClosed = (error: unknown, signal?: AbortSignal) => isAbortError(error) || signal?.aborted === true
-export type ServerEvent = Event & { current?: OpenCodeEvent }
+export type ServerEvent = Event & { id?: string; current?: OpenCodeEvent }
 type QueuedServerEvent = { directory: string; payload: ServerEvent }
 type CurrentDelta = Extract<
   OpenCodeEvent,
@@ -30,57 +24,10 @@ type CurrentDelta = Extract<
 >
 
 export function adaptServerEvent(event: OpenCodeEvent): ServerEvent {
-  if (event.type === "permission.v2.asked") {
-    return {
-      id: event.id,
-      type: "permission.asked",
-      properties: {
-        id: event.data.id,
-        sessionID: event.data.sessionID,
-        permission: event.data.action,
-        patterns: event.data.resources,
-        always: event.data.save ?? [],
-        metadata: event.data.metadata ?? {},
-        tool:
-          event.data.source?.type === "tool"
-            ? { messageID: event.data.source.messageID, callID: event.data.source.callID }
-            : undefined,
-      },
-      current: event,
-    } as ServerEvent
-  }
-  if (event.type === "permission.v2.replied")
-    return { id: event.id, type: "permission.replied", properties: event.data, current: event } as ServerEvent
-  if (event.type === "question.v2.asked")
-    return { id: event.id, type: "question.asked", properties: event.data, current: event } as ServerEvent
-  if (event.type === "question.v2.replied")
-    return { id: event.id, type: "question.replied", properties: event.data, current: event } as ServerEvent
-  if (event.type === "question.v2.rejected")
-    return { id: event.id, type: "question.rejected", properties: event.data, current: event } as ServerEvent
   return { id: event.id, type: event.type, properties: event.data, current: event } as ServerEvent
 }
 
-export function adaptWorktreeCompatibilityEvent(event: { directory?: string; payload: Event }) {
-  if (event.payload.type !== "worktree.ready" && event.payload.type !== "worktree.failed") return
-  return { directory: event.directory ?? "global", payload: event.payload }
-}
-
-const coalescedKey = (event: QueuedServerEvent) => {
-  if (event.payload.type === "lsp.updated") return `lsp.updated:${event.directory}`
-  if (event.payload.type === "message.part.updated") {
-    const part = event.payload.properties.part
-    return `message.part.updated:${event.directory}:${part.messageID}:${part.id}`
-  }
-  return undefined
-}
-
 export function enqueueServerEvent(queue: QueuedServerEvent[], event: QueuedServerEvent) {
-  const key = coalescedKey(event)
-  const previous = queue[queue.length - 1]
-  if (key && previous && coalescedKey(previous) === key) {
-    queue[queue.length - 1] = event
-    return false
-  }
   queue.push(event)
   return true
 }
@@ -116,60 +63,9 @@ export function coalesceServerEvents(events: QueuedServerEvent[]) {
       output.push(event)
       return
     }
-    if (event.payload.type !== "message.part.delta") {
-      output.push(event)
-      return
-    }
-    const props = event.payload.properties
-    const previous = output[output.length - 1]
-    if (
-      !previous ||
-      previous.payload.type !== "message.part.delta" ||
-      previous.directory !== event.directory ||
-      previous.payload.properties.messageID !== props.messageID ||
-      previous.payload.properties.partID !== props.partID ||
-      previous.payload.properties.field !== props.field
-    ) {
-      output.push({
-        directory: event.directory,
-        payload: { ...event.payload, properties: { ...props } },
-      })
-      return
-    }
-    output[output.length - 1] = {
-      directory: event.directory,
-      payload: {
-        ...event.payload,
-        properties: { ...props, delta: previous.payload.properties.delta + props.delta },
-      },
-    }
+    output.push(event)
   })
   return output
-}
-
-export function applyWorktreeEvent(scope: ServerScope, event: QueuedServerEvent, fallback: string) {
-  if (event.payload.type === "worktree.ready") {
-    Worktree.ready(scope, event.directory)
-    return true
-  }
-  if (event.payload.type !== "worktree.failed") return false
-  const message = event.payload.properties.message ?? fallback
-  Worktree.failed(scope, event.directory, message)
-  return true
-}
-
-export function applyWorkspaceOperationEvent(scope: ServerScope, event: QueuedServerEvent) {
-  if (event.payload.current?.type === "session.moved") {
-    WorkspaceOperation.complete(
-      scope,
-      event.payload.current.data.sessionID,
-      event.payload.current.data.location.directory,
-    )
-    return true
-  }
-  if (event.payload.type !== "session.next.moved") return false
-  WorkspaceOperation.complete(scope, event.payload.properties.sessionID, event.payload.properties.location.directory)
-  return true
 }
 
 function currentDelta(event: OpenCodeEvent | undefined): CurrentDelta | undefined {
@@ -184,7 +80,7 @@ function currentDelta(event: OpenCodeEvent | undefined): CurrentDelta | undefine
 
 function currentDeltaKey(event: CurrentDelta) {
   if (event.type === "session.tool.input.delta")
-    return `${event.type}:${event.data.sessionID}:${event.data.assistantMessageID}:${event.data.callID}`
+    return `${event.type}:${event.data.sessionID}:${event.data.assistantMessageID}:${event.data.id}`
   if (event.type === "session.compaction.delta") return `${event.type}:${event.data.sessionID}`
   return `${event.type}:${event.data.sessionID}:${event.data.assistantMessageID}:${event.data.ordinal}`
 }
@@ -202,25 +98,17 @@ type ServerEventEmitter = ReturnType<typeof createGlobalEmitter<{ [key: string]:
 type ServerSDKBase = {
   server: ServerConnection.Any
   scope: ServerScope
-  protocol: Promise<ServerProtocol>
-  protocolKind: Accessor<ServerProtocol | undefined>
   url: string
-  client: ReturnType<typeof createSdkForServer>
-  api: CompatibleApi
-  currentApi: ServerApi
+  api: ServerApi
   event: {
     on: ServerEventEmitter["on"]
     listen: ServerEventEmitter["listen"]
     start: () => Promise<void> | undefined
   }
-  createClient: (
-    opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">,
-  ) => ReturnType<typeof createSdkForServer>
 }
 
 function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerScope): ServerSDKBase {
   const platform = usePlatform()
-  const language = useLanguage()
   const abort = new AbortController()
 
   const eventFetch = (() => {
@@ -235,16 +123,6 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   })()
 
   const eventApi = createApiForServer({ server: server.http, fetch: eventFetch })
-  const eventSdk = createSdkForServer({
-    signal: abort.signal,
-    fetch: eventFetch,
-    server: server.http,
-  })
-  const protocol = detectServerProtocol(server.http, platform.fetch ?? globalThis.fetch)
-  const [protocolKind] = createResource(
-    () => protocol,
-    (value) => value,
-  )
   const emitter = createGlobalEmitter<{
     [key: string]: ServerEvent
   }>()
@@ -273,11 +151,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     last = Date.now()
     const output = coalesceServerEvents(events)
     batch(() => {
-      output.forEach((event) => {
-        applyWorktreeEvent(scope, event, language.t("common.requestFailed"))
-        applyWorkspaceOperationEvent(scope, event)
-        emitter.emit(event.directory, event.payload)
-      })
+      output.forEach((event) => emitter.emit(event.directory, event.payload))
     })
 
     buffer.length = 0
@@ -290,56 +164,11 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   }
 
   let streamErrorLogged = false
-  let worktreeStreamErrorLogged = false
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
   let attempt: AbortController | undefined
-  let worktreeAttempt: AbortController | undefined
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
-
-  const consumeWorktreeEvents = async (active: number) => {
-    // Current worktree lifecycle events are still emitted only on the global compatibility stream.
-    while (!abort.signal.aborted && started && generation === active) {
-      const controller = new AbortController()
-      worktreeAttempt = controller
-      const onAbort = () => controller.abort()
-      abort.signal.addEventListener("abort", onAbort)
-      try {
-        const events = (await eventSdk.global.event({ signal: controller.signal })).stream
-        let yielded = Date.now()
-        for await (const event of events) {
-          const queued = adaptWorktreeCompatibilityEvent({
-            directory: event.directory,
-            payload: event.payload as Event,
-          })
-          if (queued) {
-            worktreeStreamErrorLogged = false
-            if (enqueueServerEvent(queue, queued)) schedule()
-          }
-
-          if (Date.now() - yielded < STREAM_YIELD_MS) continue
-          yielded = Date.now()
-          await wait(0)
-        }
-      } catch (error) {
-        if (!isStreamClosed(error, controller.signal) && !worktreeStreamErrorLogged) {
-          worktreeStreamErrorLogged = true
-          console.error("[global-sdk] worktree event stream failed", {
-            url: server.http.url,
-            fetch: eventFetch ? "platform" : "webview",
-            error,
-          })
-        }
-      } finally {
-        abort.signal.removeEventListener("abort", onAbort)
-        if (worktreeAttempt === controller) worktreeAttempt = undefined
-      }
-
-      if (abort.signal.aborted || !started || generation !== active) return
-      await wait(RECONNECT_DELAY_MS)
-    }
-  }
 
   const start = () => {
     if (started) return run
@@ -348,8 +177,6 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     const previous = run
     const current = (async () => {
       if (previous) await previous
-      const kind = await protocol
-      if (kind === "v2") void consumeWorktreeEvents(active)
       // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
       while (!abort.signal.aborted && started && generation === active) {
         attempt = new AbortController()
@@ -358,17 +185,12 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
         abort.signal.addEventListener("abort", onAbort)
         try {
-          const events =
-            kind === "v1"
-              ? (await eventSdk.global.event({ signal: attempt.signal })).stream
-              : eventApi.event.subscribe({ signal: attempt.signal })
+          const events = eventApi.event.subscribe({ signal: attempt.signal })
           let yielded = Date.now()
           for await (const event of events) {
             streamErrorLogged = false
-            const legacy = "payload" in event
-            if (legacy && event.payload.type === "sync") continue
-            const directory = legacy ? (event.directory ?? "global") : (event.location?.directory ?? "global")
-            const payload = legacy ? (event.payload as Event) : adaptServerEvent(event)
+            const directory = event.location?.directory ?? "global"
+            const payload = adaptServerEvent(event)
             if (enqueueServerEvent(queue, { directory, payload })) schedule()
 
             if (Date.now() - yielded < STREAM_YIELD_MS) continue
@@ -405,7 +227,6 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     started = false
     generation++
     attempt?.abort()
-    worktreeAttempt?.abort()
   }
 
   onMount(() => {
@@ -419,41 +240,17 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     flush()
   })
 
-  const sdk = createSdkForServer({
-    server: server.http,
-    fetch: platform.fetch,
-    throwOnError: true,
-  })
-  const currentApi: ServerApi = createApiForServer({ server: server.http, fetch: platform.fetch })
-  const legacy = (directory?: string) =>
-    createSdkForServer({
-      server: server.http,
-      fetch: platform.fetch,
-      throwOnError: true,
-      directory,
-    })
-  const api = createCompatibleApi({ protocol, current: currentApi, legacy, decodeVcsDiff, decodeSessionList })
+  const api = createApiForServer({ server: server.http, fetch: platform.fetch })
 
   return {
     server,
     scope,
-    protocol,
-    protocolKind,
     url: server.http.url,
-    client: sdk,
     api,
-    currentApi,
     event: {
       on: emitter.on.bind(emitter),
       listen: emitter.listen.bind(emitter),
       start,
-    },
-    createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
-      return createSdkForServer({
-        server: server.http,
-        fetch: platform.fetch,
-        ...opts,
-      })
     },
   }
 }
@@ -486,21 +283,19 @@ export const { use: useServerSDK, provider: ServerSDKProvider } = createSimpleCo
   },
 })
 
-export function useServerProtocol() {
-  const serverSDK = useServerSDK()
-  return createMemo(() => serverSDK().protocolKind())
-}
-
 type SDKEventMap = {
   [key in Event["type"]]: Extract<ServerEvent, { type: key }>
 }
 
-function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
-  const client = serverSDK.createClient({
-    directory,
-    throwOnError: true,
-  })
+export type DirectorySDK = {
+  scope: ServerScope
+  directory: string
+  api: ServerApi
+  event: ReturnType<typeof createGlobalEmitter<SDKEventMap>>
+  readonly url: string
+}
 
+function createDirSdkContext(directory: string, serverSDK: ServerSDKBase): DirectorySDK {
   const emitter = createGlobalEmitter<SDKEventMap>()
 
   const unsub = serverSDK.event.on(directory, (event) => {
@@ -510,33 +305,11 @@ function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
 
   return {
     scope: serverSDK.scope,
-    protocol: serverSDK.protocol,
     directory,
-    client,
-    api: createCompatibleApi({
-      protocol: serverSDK.protocol,
-      current: serverSDK.currentApi,
-      legacy: (next) => serverSDK.createClient({ directory: next ?? directory, throwOnError: true }),
-      directory,
-      decodeVcsDiff,
-      decodeSessionList,
-    }),
-    createApi(next: string) {
-      return createCompatibleApi({
-        protocol: serverSDK.protocol,
-        current: serverSDK.currentApi,
-        legacy: (target) => serverSDK.createClient({ directory: target ?? next, throwOnError: true }),
-        directory: next,
-        decodeVcsDiff,
-        decodeSessionList,
-      })
-    },
+    api: serverSDK.api,
     event: emitter,
     get url() {
       return serverSDK.url
-    },
-    createClient(opts: Parameters<typeof serverSDK.createClient>[0]) {
-      return serverSDK.createClient(opts)
     },
   }
 }

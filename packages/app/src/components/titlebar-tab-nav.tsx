@@ -5,11 +5,11 @@ import { createMutation } from "@tanstack/solid-query"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { useGlobal } from "@/context/global"
-import { useLanguage } from "@/context/language"
 import { ServerConnection, serverName } from "@/context/server"
 import { displayName, projectForSession } from "@/pages/layout/helpers"
 import { SessionTabAvatar } from "@/pages/layout/session-tab-avatar"
-import type { Session } from "@opencode-ai/sdk/v2"
+import type { SessionInfo } from "@opencode-ai/client/promise"
+import { sessionLabel } from "@/utils/session-title"
 import { canOpenTabRename, forwardTabRef } from "./titlebar-tab-gesture"
 import { TabPreviewPopover } from "./titlebar-tab-popover"
 import "./titlebar-tab-nav.css"
@@ -21,7 +21,7 @@ export function TabNavItem(props: {
   ref?: Ref<HTMLDivElement>
   href: string
   server: ServerConnection.Key
-  session: () => Session | undefined
+  session: () => SessionInfo | undefined
   fallbackTitle?: string
   onRename: (title: string) => Promise<void>
   onClose: () => void
@@ -55,18 +55,21 @@ export function TabNavItem(props: {
     if (!session) return
     return projectForSession(session, serverCtx()?.projects.list() ?? [])
   })
-  const title = createMemo(() => props.session()?.title ?? props.fallbackTitle)
+  const title = createMemo(() => {
+    const session = props.session()
+    return session ? sessionLabel(session) : props.fallbackTitle
+  })
 
   const projectName = createMemo(() => {
     const session = props.session()
     if (!session) return
-    return displayName(project() ?? { worktree: session.directory })
+    return displayName(project() ?? { worktree: session.location.directory })
   })
   const previewPath = createMemo(() => {
     const session = props.session()
     if (!session) return
     const home = serverCtx()?.sync.data.path.home
-    return home ? session.directory.replace(home, "~") : session.directory
+    return home ? session.location.directory.replace(home, "~") : session.location.directory
   })
   // Only label the server when multiple servers are connected.
   const serverLabel = createMemo(() => {
@@ -144,7 +147,7 @@ export function TabNavItem(props: {
     if (!canOpenTabRename(props.dragging, editing(), rename.isPending)) return
     const session = props.session()
     if (!session) return
-    titleEl.textContent = session.title
+    titleEl.textContent = session.title ?? ""
     setEditing(true)
 
     requestAnimationFrame(() => {
@@ -181,11 +184,11 @@ export function TabNavItem(props: {
       data-slot="titlebar-tab-item"
       data-title-overflow={titleOverflowing()}
       data-editing={editing()}
-      class="group relative flex h-7 w-full min-w-0 select-none flex-row items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[6px] px-1.5 [container-type:inline-size]"
+      class="group relative flex h-7 w-full min-w-0 select-none flex-row items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[6px] bg-[var(--tab-bg)] px-1.5 [container-type:inline-size] [--tab-bg:var(--v2-background-bg-deep)] hover:[--tab-bg:var(--v2-background-bg-layer-02)] has-[>a:focus-visible]:[--tab-bg:var(--v2-background-bg-layer-02)] data-[active='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[dragging='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[pressed='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[editing='true']:[--tab-bg:var(--v2-background-bg-layer-02)]"
       classList={{ invisible: props.hidden }}
       data-active={props.active}
       data-dragging={props.dragging}
-      data-state={props.active || props.pressed ? "pressed" : undefined}
+      data-pressed={props.pressed}
       onMouseDown={(event) => {
         if (event.button !== MIDDLE_MOUSE_BUTTON) return
         event.preventDefault()
@@ -225,7 +228,6 @@ export function TabNavItem(props: {
         <span data-slot="project-avatar-slot" class="flex size-4 shrink-0 items-center justify-center">
           <Show
             when={props.session()}
-            keyed
             fallback={
               <span class="block size-4 rounded-[3px] border border-v2-border-border-muted" aria-hidden="true" />
             }
@@ -233,8 +235,8 @@ export function TabNavItem(props: {
             {(session) => (
               <SessionTabAvatar
                 project={project()}
-                directory={session.directory}
-                sessionId={session.id}
+                directory={session().location.directory}
+                sessionId={session().id}
                 server={props.server}
               />
             )}
@@ -278,7 +280,7 @@ export function TabNavItem(props: {
         />
       </a>
 
-      <div data-slot="tab-close">
+      <div data-slot="tab-close" class="group-hover:bg-[var(--tab-bg)] group-data-[active=true]:bg-[var(--tab-bg)]">
         <IconButtonV2
           size="small"
           variant="ghost-muted"
@@ -324,7 +326,6 @@ export function DraftTabItem(props: {
   pressed?: boolean
   hidden?: boolean
 }) {
-  const language = useLanguage()
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
@@ -337,8 +338,8 @@ export function DraftTabItem(props: {
       data-slot="titlebar-tab-item"
       data-active={props.active}
       data-dragging={props.dragging}
-      data-state={props.active || props.pressed ? "pressed" : undefined}
-      class="group relative flex h-7 w-full min-w-0 flex-row items-center gap-1.5 overflow-hidden rounded-[6px] px-1.5 [container-type:inline-size] whitespace-nowrap"
+      data-pressed={props.pressed}
+      class="group relative flex h-7 w-full min-w-0 flex-row items-center gap-1.5 overflow-hidden rounded-[6px] bg-[var(--tab-bg)] px-1.5 [container-type:inline-size] whitespace-nowrap [--tab-bg:var(--v2-background-bg-deep)] hover:[--tab-bg:var(--v2-background-bg-layer-02)] has-[>a:focus-visible]:[--tab-bg:var(--v2-background-bg-layer-02)] data-[active='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[dragging='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[pressed='true']:[--tab-bg:var(--v2-background-bg-layer-02)] data-[editing='true']:[--tab-bg:var(--v2-background-bg-layer-02)]"
       classList={{ invisible: props.hidden }}
       onMouseDown={(event) => {
         if (event.button !== MIDDLE_MOUSE_BUTTON) return
@@ -384,7 +385,7 @@ export function DraftTabItem(props: {
           {props.title}
         </span>
       </a>
-      <div data-slot="tab-close">
+      <div data-slot="tab-close" class="group-hover:bg-[var(--tab-bg)] group-data-[active=true]:bg-[var(--tab-bg)]">
         <IconButtonV2
           size="small"
           variant="ghost-muted"
@@ -399,7 +400,7 @@ export function DraftTabItem(props: {
           class="hover-reveal relative z-10 group-hover:opacity-100 group-data-[active=true]:opacity-100 group-data-[editing=true]:opacity-100"
           onClick={closeTab}
           icon={<IconV2 name="xmark-small" />}
-          aria-label={language.t("common.closeTab")}
+          aria-label="Close tab"
         />
       </div>
     </div>

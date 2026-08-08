@@ -1,4 +1,4 @@
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { SessionInfo } from "@opencode-ai/client/promise"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createStore, produce } from "solid-js/store"
 import { Persist, persisted, removePersisted, draftPersistedKeys } from "@/utils/persist"
@@ -12,8 +12,6 @@ import { sessionHref } from "@/utils/session-route"
 import { createTabMemory } from "./tab-memory"
 import { nextTabAfterClose, pushClosedTab, removeClosedTabs, takeClosedTab, type ClosedTab } from "./closed-tabs"
 import { createDraftPromptSession, type PromptModel } from "./prompt-state"
-import { migrateTabs } from "./tab-migration"
-import { nextTab, previousTab, rememberTab, type TabHistory } from "./tab-history"
 
 export type SessionTab = {
   type: "session"
@@ -47,7 +45,7 @@ export const tabHref = (tab: Tab) =>
 
 export const tabKey = (tab: Tab) => (tab.type === "draft" ? `draft:${tab.draftID}` : `${tab.server}\n${tabHref(tab)}`)
 
-export function sessionHasOpenTab(tabs: Tab[], server: ServerConnection.Key, session: Session) {
+export function sessionHasOpenTab(tabs: Tab[], server: ServerConnection.Key, session: SessionInfo) {
   return tabs.some((tab) => tab.type === "session" && tab.server === server && tab.sessionId === session.id)
 }
 
@@ -61,7 +59,13 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const [store, setStore, _, ready] = persisted(
       {
         ...Persist.window("tabs"),
-        migrate: (value: unknown) => migrateTabs(value, fallback),
+        migrate: (value: unknown) => {
+          if (!Array.isArray(value)) return value
+          return value.map((tab) => {
+            if (!tab || typeof tab !== "object" || "server" in tab) return tab
+            return { ...tab, server: fallback }
+          })
+        },
       },
       createStore<Tab[]>([]),
     )
@@ -75,7 +79,6 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const memory = createTabMemory(getOwner())
 
     const closing = new Set<string>()
-    let history: TabHistory = { stack: [], index: -1 }
     let recentWrite = 0
     let recentValue: string | undefined
 
@@ -103,10 +106,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     }
 
     const removeDraftPersisted = (draftID: string) => {
-      for (const key of draftPersistedKeys()) {
-        const target = Persist.draft(draftID, key)
-        removePersisted(key === "prompt" ? Persist.prompt(target) : target, platform)
-      }
+      for (const key of draftPersistedKeys()) removePersisted(Persist.draft(draftID, key), platform)
     }
 
     const removeInfo = (key: string) => {
@@ -150,19 +150,8 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
     const navigateTab = (tab: Tab) => {
       const href = tabHref(tab)
-      history = rememberTab(history, tabKey(tab))
       setRecentKey(tabKey(tab))
       navigate(href)
-    }
-
-    const moveHistory = (direction: "previous" | "next") => {
-      const available = new Set(store.map(tabKey))
-      const result = direction === "previous" ? previousTab(history, available) : nextTab(history, available)
-      if (!result) return
-      const tab = store.find((item) => tabKey(item) === result.key)
-      if (!tab) return
-      history = result.state
-      navigateTab(tab)
     }
 
     const removeTab = (index: number) => {
@@ -190,11 +179,6 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     }
 
     const actions = {
-      active() {
-        if (location.pathname === "/") return
-        const key = recentKey()
-        return store.find((tab) => tabKey(tab) === key)
-      },
       addSessionTab: (tab: Omit<SessionTab, "type">) => {
         const next = { type: "session" as const, ...tab }
         const existing = store.find((item) => tabKey(item) === tabKey(next))
@@ -365,21 +349,19 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         for (const key of removed) memory.remove(key)
         for (const key of removed) removeInfo(key)
       },
-      rememberSessionInfo(tab: SessionTab, session: Session) {
+      rememberSessionInfo(tab: SessionTab, session: SessionInfo) {
         const key = tabKey(tab)
-        const next = { title: session.title, directory: session.directory }
+        const next = { title: session.title, directory: session.location.directory }
         const current = info[key]
+        console.log({ tab, session, current })
         if (current?.title === next.title && current.directory === next.directory) return
         setInfo(key, next)
       },
       select: navigateTab,
       remember(tab: Tab) {
         const key = tabKey(tab)
-        history = rememberTab(history, key)
         if (recentKey() !== key) setRecentKey(key)
       },
-      previous: () => moveHistory("previous"),
-      next: () => moveHistory("next"),
       toggleHome(input: { home: boolean; current?: Tab }) {
         if (input.home) {
           const tab = store.find((tab) => tabKey(tab) === recentKey())

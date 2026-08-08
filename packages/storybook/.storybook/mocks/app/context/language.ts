@@ -1,7 +1,4 @@
 const dict: Record<string, string> = {
-  "session.todo.title": "Todos",
-  "session.todo.collapse": "Collapse todos",
-  "session.todo.expand": "Expand todos",
   "session.revertDock.summary.one": "{{count}} rolled back message",
   "session.revertDock.summary.other": "{{count}} rolled back messages",
   "session.revertDock.collapse": "Collapse rolled back messages",
@@ -123,8 +120,6 @@ const dict: Record<string, string> = {
   "prompt.example.25": "What should we test next?",
 }
 
-const plurals = new Intl.PluralRules("en-US")
-
 function render(template: string, params?: Record<string, unknown>) {
   if (!params) return template
   return template.replace(/\{\{([^}]+)\}\}/g, (_, key: string) => {
@@ -141,10 +136,6 @@ export function useLanguage() {
     intl: () => "en-US",
     t(key: string, params?: Record<string, unknown>) {
       return render(dict[key] ?? key, params)
-    },
-    plural(key: string, count: number, params?: Record<string, unknown>) {
-      const value = dict[`${key}.${plurals.select(count)}`] ?? dict[`${key}.other`] ?? key
-      return render(value, { ...params, count })
     },
   }
 }

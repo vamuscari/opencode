@@ -1,28 +1,20 @@
-import { createMemo } from "solid-js"
+import { createMemo, createSignal } from "solid-js"
 import { useSDK } from "@/context/sdk"
-import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
-import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
-import { pathKey } from "@/utils/path-key"
-import {
-  isWorkspaceDirectory,
-  isWorkspaceSelection,
-  workspaceDefaultSelection,
-  workspaceDirectories,
-} from "@/utils/workspace"
+
+const workspaceBarEnabled = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
 
 export function resolveNewSessionWorktree(input: {
   enabled: boolean
   selected?: string
   directory: string
   projectWorktree?: string
-  fallback?: string
 }) {
   if (!input.enabled) return "main"
   if (input.selected) return input.selected
   if (input.projectWorktree && input.directory !== input.projectWorktree) return input.directory
-  return input.fallback ?? "main"
+  return "main"
 }
 
 export function normalizeNewSessionWorktree(value: string, directory: string, projectWorktree?: string) {
@@ -39,38 +31,18 @@ export function resolveNewSessionBranch(input: {
   return input.worktreeBranch(input.worktree) ?? input.local
 }
 
-export function createNewSessionWorkspaceController(input: {
-  selected: () => string | undefined
-  setSelected: (worktree: string | undefined) => void
-  onViewAll: () => void
-}) {
+export function createNewSessionWorkspaceController() {
   const sdk = useSDK()
   const sync = useSync()
-  const serverSDK = useServerSDK()
   const serverSync = useServerSync()
-  const settings = useSettings()
-  const visible = createMemo(() => sync().project?.vcs === "git")
-  const selected = createMemo(() => {
-    const project = sync().project
-    const worktree = input.selected()
-    if (!project || !worktree) return
-    return isWorkspaceSelection(project, worktree) ? worktree : undefined
-  })
-  const fallback = createMemo(() => {
-    const project = sync().project
-    if (!project) return "main"
-    return workspaceDefaultSelection(
-      settings.workspaces.defaultDestination(),
-      settings.workspaces.lastUsed(serverSDK().scope, project.id),
-    )
-  })
+  const [worktree, setWorktree] = createSignal<string>()
+  const visible = createMemo(() => workspaceBarEnabled && sync().project?.vcs === "git")
   const value = createMemo(() =>
     resolveNewSessionWorktree({
       enabled: visible(),
-      selected: selected(),
+      selected: worktree(),
       directory: sdk().directory,
       projectWorktree: sync().project?.worktree,
-      fallback: fallback(),
     }),
   )
   const projectRoot = createMemo(() => sync().project?.worktree ?? sdk().directory)
@@ -82,36 +54,18 @@ export function createNewSessionWorkspaceController(input: {
       worktreeBranch: (worktree) => serverSync().child(worktree)[0].vcs?.branch,
     }),
   )
-  const remember = (worktree = value()) => {
-    const project = sync().project
-    if (!project) return
-    const local = worktree === "main" || pathKey(worktree) === pathKey(project.worktree)
-    settings.workspaces.setLastUsed(serverSDK().scope, project.id, local ? "local" : "workspace")
-  }
 
   return {
     selection: {
       value,
-      workspace: createMemo(() => {
-        const project = sync().project
-        const current = value()
-        return current === "create" || (!!project && isWorkspaceDirectory(project, current))
-      }),
-      reset: () => input.setSelected(undefined),
-      remember,
-      set: (worktree: string) => {
-        input.setSelected(normalizeNewSessionWorktree(worktree, sdk().directory, sync().project?.worktree))
-        remember(worktree)
-      },
+      reset: () => setWorktree(),
+      set: (worktree: string) =>
+        setWorktree(normalizeNewSessionWorktree(worktree, sdk().directory, sync().project?.worktree)),
     },
     project: {
       root: projectRoot,
-      workspaces: () => {
-        const project = sync().project
-        return project ? workspaceDirectories(project) : []
-      },
+      workspaces: () => sync().project?.sandboxes ?? [],
       git: () => sync().project?.vcs === "git",
-      openAll: input.onViewAll,
     },
     bar: {
       visible,

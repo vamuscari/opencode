@@ -1,22 +1,25 @@
 import { createServer } from "node:http"
-import type { IntegrationOAuthMethodRegistration } from "@opencode-ai/plugin/v2/effect/integration"
-import { define } from "@opencode-ai/plugin/v2/effect/plugin"
-import { Deferred, Effect } from "effect"
-import type { Scope } from "effect"
+import type { IntegrationOAuthMethodRegistration } from "@opencode-ai/plugin/effect/integration"
+import { define } from "@opencode-ai/plugin/effect/plugin"
+import { Deferred, Effect, Option, Schema, Semaphore, Stream } from "effect"
+import { App } from "../../app"
 import { Credential } from "../../credential"
-import { InstallationVersion } from "../../installation/version"
+import { Bus } from "../../bus"
 import { Integration } from "../../integration"
-import { ModelV2 } from "../../model"
+import { Model } from "../../model"
 import { OauthCallbackPage } from "../../oauth/page"
-import { ProviderV2 } from "../../provider"
+import { Provider } from "../../provider"
 import type { PluginInternal } from "../internal"
 
 const clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const issuer = "https://auth.openai.com"
 const callbackPort = 1455
 const pollingSafetyMargin = 3000
+const codexBaseURL = "https://chatgpt.com/backend-api/codex"
 const browserMethodID = Integration.MethodID.make("chatgpt-browser")
 const headlessMethodID = Integration.MethodID.make("chatgpt-headless")
+const codexAllowed = new Set(["gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini"])
+const codexDisallowed = new Set(["gpt-5.5-pro", "gpt-5.6"])
 
 type Pkce = {
   verifier: string
@@ -30,13 +33,18 @@ type TokenResponse = {
   expires_in?: number
 }
 
-type Claims = {
-  chatgpt_account_id?: string
-  organizations?: Array<{ id: string }>
-  "https://api.openai.com/auth"?: { chatgpt_account_id?: string }
-}
+const Claims = Schema.fromJsonString(
+  Schema.Struct({
+    chatgpt_account_id: Schema.optional(Schema.String),
+    organizations: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String }))),
+    "https://api.openai.com/auth": Schema.optional(
+      Schema.Struct({ chatgpt_account_id: Schema.optional(Schema.String) }),
+    ),
+  }),
+)
+const decodeClaims = Schema.decodeUnknownOption(Claims)
 
-const browser = {
+const browser = (app: App.Info) => ({
   integrationID: Integration.ID.make("openai"),
   method: {
     id: browserMethodID,
@@ -85,15 +93,15 @@ const browser = {
         url: authorizeURL(redirect, pkce, state),
         instructions: "Complete authorization in your browser. This window will close automatically.",
         callback: Deferred.await(code).pipe(
-          Effect.flatMap((value) => exchange(value, redirect, pkce)),
+          Effect.flatMap((value) => exchange(value, redirect, pkce, app)),
           Effect.map((tokens) => credential(browserMethodID, tokens)),
         ),
       }
     }),
-  refresh: (value) => refresh(browserMethodID, value),
-} satisfies IntegrationOAuthMethodRegistration
+  refresh: (value) => refresh(browserMethodID, value, app),
+}) satisfies IntegrationOAuthMethodRegistration
 
-const headless = {
+const headless = (app: App.Info) => ({
   integrationID: Integration.ID.make("openai"),
   method: {
     id: headlessMethodID,
@@ -106,7 +114,7 @@ const headless = {
         `${issuer}/api/accounts/deviceauth/usercode`,
         {
           method: "POST",
-          headers: headers("application/json"),
+          headers: headers("application/json", app),
           body: JSON.stringify({ client_id: clientID }),
         },
       )
@@ -121,7 +129,7 @@ const headless = {
               try: (signal) =>
                 fetch(`${issuer}/api/accounts/deviceauth/token`, {
                   method: "POST",
-                  headers: headers("application/json"),
+                  headers: headers("application/json", app),
                   body: JSON.stringify({ device_auth_id: device.device_auth_id, user_code: device.user_code }),
                   signal,
                 }),
@@ -134,10 +142,12 @@ const headless = {
               }
               return credential(
                 headlessMethodID,
-                yield* exchange(data.authorization_code, `${issuer}/deviceauth/callback`, {
-                  verifier: data.code_verifier,
-                  challenge: "",
-                }),
+                yield* exchange(
+                  data.authorization_code,
+                  `${issuer}/deviceauth/callback`,
+                  { verifier: data.code_verifier, challenge: "" },
+                  app,
+                ),
               )
             }
             if (response.status !== 403 && response.status !== 404) {
@@ -148,54 +158,101 @@ const headless = {
         }),
       }
     }),
-  refresh: (value) => refresh(headlessMethodID, value),
-} satisfies IntegrationOAuthMethodRegistration
+  refresh: (value) => refresh(headlessMethodID, value, app),
+}) satisfies IntegrationOAuthMethodRegistration
 
 export const OpenAIPlugin = define({
-  id: "openai",
+  id: "opencode.provider.openai",
   effect: Effect.fn(function* (ctx) {
-    yield* ctx.integration.transform((draft) => {
-      draft.method.update(browser)
-      draft.method.update(headless)
+    const bus = yield* Bus.Service
+    const loading = Semaphore.makeUnsafe(1)
+    let chatgpt: Credential.OAuth | undefined
+
+    const load = Effect.fn("OpenAIPlugin.load")(function* () {
+      const connection = yield* ctx.integration.connection.active("openai")
+      const credential = connection
+        ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        : undefined
+      chatgpt =
+        credential?.type === "oauth" &&
+        (credential.methodID === browserMethodID || credential.methodID === headlessMethodID)
+          ? credential
+          : undefined
     })
-    yield* ctx.catalog.transform(
-      Effect.fn(function* (evt) {
-        for (const item of evt.provider.list()) {
-          if (item.provider.api.type !== "aisdk") continue
-          if (item.provider.api.package !== "@ai-sdk/openai") continue
-          if (!item.models.has(ModelV2.ID.make("gpt-5-chat-latest"))) continue
-          evt.model.update(item.provider.id, ModelV2.ID.make("gpt-5-chat-latest"), (model) => {
-            // OpenAIPlugin sends OpenAI models through Responses; this alias is a
-            // chat-completions-only model, so hide it only from OpenAI's catalog.
-            model.enabled = false
-          })
-        }
+
+    yield* ctx.integration.transform((draft) => {
+      draft.method.update(browser(ctx.app))
+      draft.method.update(headless(ctx.app))
+    })
+    yield* load()
+    yield* ctx.catalog.transform((evt) => {
+      for (const item of evt.provider.list()) {
+        if (!Provider.isAISDK(item.provider.package)) continue
+        if (Provider.packageName(item.provider.package) !== "@ai-sdk/openai") continue
+        evt.provider.update(item.provider.id, (provider) => {
+          provider.package = "@opencode-ai/ai/providers/openai"
+        })
+      }
+      if (!chatgpt) return
+      const item = evt.provider.get(Provider.ID.openai)
+      if (!item) return
+      item.provider.settings = Provider.mergeOverlay(item.provider.settings, { baseURL: codexBaseURL })
+      const account = chatgpt.metadata?.accountID
+      item.provider.headers = Provider.mergeHeaders(
+        item.provider.headers,
+        typeof account === "string" ? { "chatgpt-account-id": account } : undefined,
+      )
+      for (const model of item.models.values()) {
+        // ChatGPT-plan tokens only authorize codex-eligible models, and the
+        // subscription covers usage, so hide the rest and zero the cost.
+        evt.model.update(item.provider.id, model.id, (draft) => {
+          if (Schema.is(Schema.Struct({ mode: Schema.Literal("pro") }))(draft.body?.reasoning)) {
+            draft.enabled = false
+            return
+          }
+          const apiID = draft.modelID ?? draft.id
+          const match = apiID.match(/^gpt-(\d+\.\d+)/)
+          if (
+            !codexAllowed.has(apiID) &&
+            (codexDisallowed.has(apiID) || !match || Number.parseFloat(match[1]) <= 5.4)
+          ) {
+            draft.enabled = false
+            return
+          }
+          draft.cost = []
+          // Match Codex CLI so context consumption and subscription usage stay consistent between clients.
+          draft.limit = { ...draft.limit, context: 400_000, input: 272_000 }
+        })
+      }
+    })
+    yield* ctx.session.hook("http.request", (evt) =>
+      Effect.sync(() => {
+        if (!chatgpt || evt.model.providerID !== Provider.ID.openai) return
+        const url = new URL(evt.request.url)
+        evt.request.headers.set("originator", "opencode")
+        evt.request.headers.set("session-id", evt.sessionID)
+        if (url.origin !== "https://api.openai.com") return
+        evt.request = new Request(`${codexBaseURL}${url.pathname.replace(/^\/v1/, "")}${url.search}`, evt.request)
       }),
     )
-    yield* ctx.aisdk.sdk(
-      Effect.fn(function* (evt) {
-        if (evt.package !== "@ai-sdk/openai") return
-        const mod = yield* Effect.promise(() => import("@ai-sdk/openai"))
-        evt.sdk = mod.createOpenAI(evt.options)
-      }),
-    )
-    yield* ctx.aisdk.language(
-      Effect.fn(function* (evt) {
-        if (evt.model.providerID !== ProviderV2.ID.openai) return
-        evt.language = evt.sdk.responses(evt.model.api.id)
-      }),
+
+    const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())))
+    yield* bus.subscribe(Integration.Event.ConnectionUpdated).pipe(
+      Stream.filter((event) => event.data.integrationID === Integration.ID.make("openai")),
+      Stream.runForEach(refresh),
+      Effect.forkScoped({ startImmediately: true }),
     )
   }),
-} satisfies PluginInternal.Plugin<PluginInternal.Requirements | Scope.Scope>)
+} satisfies PluginInternal.InternalPlugin)
 
-function headers(contentType: string) {
-  return { "Content-Type": contentType, "User-Agent": `opencode/${InstallationVersion}` }
+function headers(contentType: string, app: App.Info) {
+  return { "Content-Type": contentType, "User-Agent": App.useragent(app) }
 }
 
-function exchange(code: string, redirect: string, pkce: Pkce) {
+function exchange(code: string, redirect: string, pkce: Pkce, app: App.Info) {
   return request<TokenResponse>(`${issuer}/oauth/token`, {
     method: "POST",
-    headers: headers("application/x-www-form-urlencoded"),
+    headers: headers("application/x-www-form-urlencoded", app),
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
@@ -206,10 +263,10 @@ function exchange(code: string, redirect: string, pkce: Pkce) {
   })
 }
 
-function refresh(methodID: Integration.MethodID, value: Pick<Credential.OAuth, "refresh" | "metadata">) {
+function refresh(methodID: Integration.MethodID, value: Pick<Credential.OAuth, "refresh" | "metadata">, app: App.Info) {
   return request<TokenResponse>(`${issuer}/oauth/token`, {
     method: "POST",
-    headers: headers("application/x-www-form-urlencoded"),
+    headers: headers("application/x-www-form-urlencoded", app),
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: value.refresh,
@@ -279,14 +336,11 @@ function extractAccountID(tokens: TokenResponse) {
 function claim(token: string) {
   const part = token.split(".")[1]
   if (!part) return
-  try {
-    const claims = JSON.parse(Buffer.from(part, "base64url").toString()) as Claims
-    return (
-      claims.chatgpt_account_id ??
-      claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
-      claims.organizations?.[0]?.id
-    )
-  } catch {
-    return
-  }
+  const claims = Option.getOrUndefined(decodeClaims(Buffer.from(part, "base64url").toString()))
+  if (!claims) return
+  return (
+    claims.chatgpt_account_id ??
+    claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
+    claims.organizations?.[0]?.id
+  )
 }

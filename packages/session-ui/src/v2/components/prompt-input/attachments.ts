@@ -74,11 +74,9 @@ export type PromptInputV2AttachmentConfig = {
   directory: () => string
   isDialogActive: () => boolean
   warn: () => void
-  duplicate: () => void
   onError: (error: unknown) => void
   readClipboardImage?: () => Promise<File | null>
   getPathForFile?: (file: File) => string
-  store?: (file: File) => Promise<{ id: string; url: string }>
 }
 
 export function createPromptInputV2Attachments(
@@ -96,38 +94,22 @@ export function createPromptInputV2Attachments(
     if (!editor) return
     return { prompt, cursor: prompt.cursor() ?? cursorPosition(editor) }
   }
-  const add = async (file: File, toast = true, target = capture(), clipboard = false) => {
+  const add = async (file: File, toast = true, target = capture()) => {
     if (!target) return false
     const mime = await attachmentMime(file)
     if (!mime) {
       if (toast) input.warn()
       return false
     }
-    const blob = input.store ? await input.store(file) : await blobReference(file)
-    const sourcePath = input.getPathForFile?.(file) || undefined
-    // Native clipboard images arrive with a fresh timestamped filename on every paste, so identical
-    // clipboard content is matched on bytes alone.
-    const duplicate = target.prompt
-      .current()
-      .some(
-        (part) =>
-          part.type === "image" &&
-          part.blob.id === blob.id &&
-          (sourcePath
-            ? part.sourcePath === sourcePath
-            : !part.sourcePath && (clipboard || part.filename === file.name)),
-      )
-    if (duplicate) {
-      input.duplicate()
-      return true
-    }
+    const url = await dataUrl(file, mime)
+    if (!url) return false
     const attachment: PromptInputV2Attachment = {
       type: "image",
       id: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2),
       filename: file.name,
-      sourcePath,
+      sourcePath: input.getPathForFile?.(file) || undefined,
       mime,
-      blob,
+      dataUrl: url,
     }
     target.prompt.set([...target.prompt.current(), attachment], target.cursor)
     return true
@@ -159,7 +141,7 @@ export function createPromptInputV2Attachments(
     const plainText = clipboardData.getData("text/plain") ?? ""
     if (input.readClipboardImage && !plainText) {
       const file = await input.readClipboardImage()
-      if (file && (await add(file, true, target, true))) return
+      if (file && (await add(file, true, target))) return
     }
     if (!plainText) return
     const text = plainText.includes("\r") ? plainText.replace(/\r\n?/g, "\n") : plainText
@@ -219,14 +201,20 @@ export function createPromptInputV2Attachments(
   }
 }
 
-const imageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
-
-async function blobReference(file: File) {
-  const id = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer())))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("")
-  return { id, url: URL.createObjectURL(file) }
+function dataUrl(file: File, mime: string) {
+  return new Promise<string>((resolve) => {
+    const reader = new FileReader()
+    reader.addEventListener("error", () => resolve(""))
+    reader.addEventListener("load", () => {
+      const value = typeof reader.result === "string" ? reader.result : ""
+      const index = value.indexOf(",")
+      resolve(index === -1 ? value : `data:${mime};base64,${value.slice(index + 1)}`)
+    })
+    reader.readAsDataURL(file)
+  })
 }
+
+const imageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
 const imageExtensions = new Map([
   ["gif", "image/gif"],
   ["jpeg", "image/jpeg"],

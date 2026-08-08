@@ -4,7 +4,6 @@ import { join } from "node:path"
 import * as pty from "@lydell/node-pty"
 import type { WslDistroProbe, WslInstalledDistro, WslOnlineDistro, WslRuntimeCheck } from "../../preload/types"
 import { wslTerminalArgs } from "./policy"
-import { nativeT } from "../native-translations"
 
 export type WslCommandLine = {
   stream: "stdout" | "stderr"
@@ -69,9 +68,7 @@ function runCommand(command: string, args: string[], opts: RunWslOptions = {}) {
       } catch {
         /* ignore */
       }
-      reject(
-        new Error(nativeT("desktop.wsl.error.commandTimeout", { command, args: args.join(" "), timeout: timeoutMs })),
-      )
+      reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
 
     let stdout = ""
@@ -142,9 +139,7 @@ function runInteractiveCommand(command: string, args: string[], opts: RunWslOpti
       if (settled) return
       settled = true
       cleanup()
-      reject(
-        new Error(nativeT("desktop.wsl.error.commandTimeout", { command, args: args.join(" "), timeout: timeoutMs })),
-      )
+      reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
 
     const abortHandler = () => {
@@ -219,7 +214,7 @@ export async function probeWslRuntime(opts?: RunWslOptions): Promise<WslRuntimeC
     return {
       available: false,
       version: null,
-      error: summarize(version.stderr || version.stdout) || nativeT("desktop.wsl.error.unavailable"),
+      error: summarize(version.stderr || version.stdout) || "WSL is unavailable",
     }
   }
 
@@ -233,7 +228,7 @@ export async function probeWslRuntime(opts?: RunWslOptions): Promise<WslRuntimeC
 export async function listInstalledWslDistros(opts?: RunWslOptions) {
   const result = await runWsl(["--list", "--verbose"], opts)
   if (result.code !== 0) {
-    throw new Error(summarize(result.stderr || result.stdout) || nativeT("desktop.wsl.error.listInstalled"))
+    throw new Error(summarize(result.stderr || result.stdout) || "Failed to list installed WSL distros")
   }
   return parseInstalledDistros(result.stdout)
 }
@@ -241,7 +236,7 @@ export async function listInstalledWslDistros(opts?: RunWslOptions) {
 export async function listOnlineWslDistros(opts?: RunWslOptions) {
   const result = await runWsl(["--list", "--online"], opts)
   if (result.code !== 0) {
-    throw new Error(summarize(result.stderr || result.stdout) || nativeT("desktop.wsl.error.listOnline"))
+    throw new Error(summarize(result.stderr || result.stdout) || "Failed to list online WSL distros")
   }
   return parseOnlineDistros(result.stdout)
 }
@@ -289,7 +284,7 @@ export async function probeWslDistro(name: string, opts?: RunWslOptions): Promis
       canExecute: false,
       hasBash: false,
       hasCurl: false,
-      error: summarize(executable.stderr || executable.stdout) || nativeT("desktop.wsl.error.executeDistro"),
+      error: summarize(executable.stderr || executable.stdout) || "Cannot execute commands in distro",
     }
   }
 

@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@opencode-ai/util/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
@@ -41,6 +41,14 @@ describe("ProjectDirectories", () => {
       expect(yield* service.create({ projectID, directory })).toBe(true)
       expect(yield* service.create({ projectID, directory, strategy: "git_worktree" })).toBe(false)
       expect(yield* service.list(projectID)).toEqual([{ directory, strategy: undefined }])
+    }),
+  )
+
+  it.effect("returns an empty list for missing projects", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectDirectories.Service
+
+      expect(yield* service.list(Project.ID.make("missing-project"))).toEqual([])
     }),
   )
 

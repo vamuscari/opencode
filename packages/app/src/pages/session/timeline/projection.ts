@@ -1,5 +1,5 @@
-import type { SessionMessageInfo } from "@opencode-ai/client/promise"
-import type { AssistantMessage, Message, Part, SessionStatus, UserMessage } from "@opencode-ai/sdk/v2"
+import type { SessionMessageInfo, SessionStatus } from "@opencode-ai/client/promise"
+import type { AssistantMessage, Message, Part, UserMessage } from "@/types"
 import { createMemo, type Accessor } from "solid-js"
 import { reuseTimelineRows } from "./row-reconciliation"
 import { Timeline, TimelineRow } from "./rows"
@@ -14,8 +14,6 @@ export function createTimelineProjection(input: {
   status: Accessor<SessionStatus>
   showReasoningSummaries: Accessor<boolean>
   inlineComments: Accessor<boolean>
-  extensionRevision?: Accessor<unknown>
-  afterUser?: (message: UserMessage) => TimelineRow.TimelineRow[]
 }) {
   const messageByID = createMemo(() => new Map(input.messages().map((message) => [message.id, message] as const)))
   const assistantMessagesByParent = createMemo(() => {
@@ -31,9 +29,8 @@ export function createTimelineProjection(input: {
     })
     return result
   })
-  const projection = createMemo(() => {
-    const extension = input.extensionRevision?.()
-    return Timeline.constructSessionMessageRows(
+  const projection = createMemo(() =>
+    Timeline.constructSessionMessageRows(
       input.sessionMessages(),
       (messageID) => messageByID().get(messageID) as UserMessage | AssistantMessage | undefined,
       input.parts,
@@ -41,9 +38,8 @@ export function createTimelineProjection(input: {
       input.status().type,
       input.inlineComments(),
       input.userMessages(),
-      input.extensionRevision && extension === undefined ? undefined : input.afterUser,
-    )
-  })
+    ),
+  )
   const activeMessageID = createMemo(() => projection().activeMessageID)
   const rows = createMemo((previous: TimelineRow.TimelineRow[] | undefined) =>
     reuseTimelineRows(previous, projection().rows),

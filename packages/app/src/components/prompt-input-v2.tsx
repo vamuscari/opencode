@@ -5,7 +5,7 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { Icon } from "@opencode-ai/ui/v2/icon"
 import { KeybindV2 } from "@opencode-ai/ui/v2/keybind-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
-import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
+import type { ReferenceInfo } from "@opencode-ai/client/promise"
 import { createEffect, createMemo, on, Show } from "solid-js"
 import { ModelSelectorPopoverV2 } from "@/components/dialog-select-model"
 import { DialogSelectModelUnpaidV2 } from "@/components/dialog-select-model-unpaid-v2"
@@ -37,7 +37,6 @@ export type PromptInputV2ComposerProps = {
   class?: string
   controller: PromptInputV2ComposerController
   borderUnderlay?: boolean
-  accentSubmit?: boolean
 }
 
 export type PromptInputV2ControllerProps = Omit<PromptInputProps, "class" | "submission">
@@ -54,10 +53,8 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
     <div class="flex flex-col gap-3">
       <PromptInputV2
         controller={props.controller}
-        accentSubmit={props.accentSubmit}
         borderUnderlay={props.borderUnderlay}
         class={props.class}
-        variantControlVisible={!props.controller.model.loading}
         attachKeybind={command.keybindParts("file.attach")}
         attachShortcut={command.keybind("file.attach")}
         modelControl={
@@ -139,10 +136,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       t: (key, params) => language.t(key as Parameters<typeof language.t>[0], params as never),
     }),
   )
-  const designPlaceholder = () =>
-    promptDesignPlaceholder(mode(), placeholder(), (key, params) =>
-      language.t(key as Parameters<typeof language.t>[0], params as never),
-    )
+  const designPlaceholder = () => promptDesignPlaceholder(mode(), placeholder())
 
   const historyComments = () => {
     const byID = new Map(comments.all().map((item) => [`${item.file}\n${item.id}`, item] as const))
@@ -349,7 +343,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       if (item?.commentID) comments.remove(item.path, item.commentID)
     },
     openAttachment: (attachment) =>
-      dialog.show(() => <ImagePreview src={attachment.blob.url} alt={attachment.filename} />),
+      dialog.show(() => <ImagePreview src={attachment.dataUrl} alt={attachment.filename} />),
     openContext(key) {
       const item = controller.contextItem(key)
       if (item) openComment(item, props, sync, layout, files, comments)
@@ -373,7 +367,6 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
           title: language.t("prompt.toast.pasteUnsupported.title"),
           description: language.t("prompt.toast.pasteUnsupported.description"),
         }),
-      duplicate: () => showToast({ title: language.t("prompt.toast.attachmentDuplicate.title") }),
       onError: (error) =>
         showToast({
           variant: "error",
@@ -382,7 +375,6 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
         }),
       readClipboardImage: platform.readClipboardImage,
       getPathForFile: platform.getPathForFile,
-      store: platform.draftStore?.putBlob,
     },
     view: {
       placeholder: designPlaceholder,

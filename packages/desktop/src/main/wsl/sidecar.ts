@@ -5,7 +5,6 @@ import { app } from "electron"
 import { checkHealth } from "../server"
 import { type WslCommandLine, resolveWslOpencode, shellEscape, wslArgs } from "./runtime"
 import { pollWslHealth } from "./startup"
-import { nativeT } from "../native-translations"
 
 export type WslSidecar = {
   listener: { stop: () => void; onExit: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void }
@@ -19,7 +18,7 @@ export async function spawnWslSidecar(
   opts: { onLine?: (line: WslCommandLine) => void; healthTimeoutMs?: number } = {},
 ): Promise<WslSidecar> {
   const opencode = await resolveWslOpencode(distro)
-  if (!opencode) throw new Error(nativeT("desktop.wsl.error.opencodeNotInstalled", { distro }))
+  if (!opencode) throw new Error(`OpenCode is not installed in ${distro}`)
 
   const port = await allocatePort()
   const password = randomUUID()
@@ -65,7 +64,7 @@ export async function spawnWslSidecar(
   const timedOut = new Promise<never>(
     (_, reject) =>
       (timeout = setTimeout(
-        () => reject(new Error(nativeT("desktop.wsl.error.healthTimeout", { distro, timeout: timeoutMs }))),
+        () => reject(new Error(`Sidecar for ${distro} health check timed out after ${timeoutMs}ms`)),
         timeoutMs,
       )),
   )
@@ -98,7 +97,7 @@ function allocatePort() {
       const address = server.address()
       if (typeof address !== "object" || !address) {
         server.close()
-        reject(new Error(nativeT("desktop.wsl.error.failedPort")))
+        reject(new Error("Failed to get port"))
         return
       }
       server.close(() => resolve(address.port))
@@ -126,9 +125,5 @@ function forwardLines(
 
 function startupFailure(code: number | null, signal: NodeJS.Signals | null, recentOutput: string[]) {
   const suffix = recentOutput.length ? `\n${recentOutput.join("\n")}` : ""
-  return nativeT("desktop.wsl.error.serverExitedBeforeHealthy", {
-    code: code ?? "null",
-    signal: signal ?? "null",
-    output: suffix,
-  })
+  return `WSL server exited before becoming healthy (code=${code ?? "null"} signal=${signal ?? "null"})${suffix}`
 }

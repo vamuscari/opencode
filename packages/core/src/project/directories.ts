@@ -3,16 +3,14 @@ export * as ProjectDirectories from "./directories"
 import { and, asc, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
-import { makeGlobalNode } from "../effect/app-node"
-import { AbsolutePath, optional } from "../schema"
+import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
+import { AbsolutePath } from "../schema"
 import { ProjectSchema } from "./schema"
 import { ProjectDirectoryTable } from "./sql"
 import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
+import type { Project } from "../project"
 
-export interface Directory {
-  readonly directory: AbsolutePath
-  readonly strategy?: string
-}
+export type Directory = Project.Directory
 
 export const CreateInput = Schema.Struct({
   projectID: ProjectSchema.ID,
@@ -31,17 +29,10 @@ export type RemoveInput = typeof RemoveInput.Type
 type DatabaseClient = EffectDrizzleSqlite.EffectSQLiteDatabase
 export type Transaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0]
 
-export const ListInput = Schema.Struct({
-  projectID: ProjectSchema.ID,
-}).annotate({ identifier: "Project.DirectoriesInput" })
+export const ListInput = ProjectSchema.DirectoriesInput
 export type ListInput = typeof ListInput.Type
 
-export const ListOutput = Schema.Array(
-  Schema.Struct({
-    directory: AbsolutePath,
-    strategy: optional(Schema.String),
-  }),
-).annotate({ identifier: "Project.Directories" })
+export const ListOutput = ProjectSchema.Directories
 export type ListOutput = typeof ListOutput.Type
 
 export interface Interface {
@@ -50,7 +41,6 @@ export interface Interface {
     projectID: ProjectSchema.ID
     directory: AbsolutePath
   }) => Effect.Effect<Directory | undefined>
-  readonly contains: (input: { projectID: ProjectSchema.ID; directory: AbsolutePath }) => Effect.Effect<boolean>
   readonly create: (input: CreateInput, tx?: Transaction) => Effect.Effect<boolean>
   readonly remove: (input: RemoveInput, tx?: Transaction) => Effect.Effect<boolean>
 }
@@ -108,25 +98,6 @@ const layer = Layer.effect(
       return rows.map((row) => ({ directory: row.directory, strategy: row.strategy ?? undefined }))
     })
 
-    const contains = Effect.fn("ProjectDirectories.contains")(function* (input: {
-      projectID: ProjectSchema.ID
-      directory: AbsolutePath
-    }) {
-      return (
-        (yield* db
-          .select({ directory: ProjectDirectoryTable.directory })
-          .from(ProjectDirectoryTable)
-          .where(
-            and(
-              eq(ProjectDirectoryTable.project_id, input.projectID),
-              eq(ProjectDirectoryTable.directory, input.directory),
-            ),
-          )
-          .get()
-          .pipe(Effect.orDie)) !== undefined
-      )
-    })
-
     const get = Effect.fn("ProjectDirectories.get")(function* (input: {
       projectID: ProjectSchema.ID
       directory: AbsolutePath
@@ -148,7 +119,6 @@ const layer = Layer.effect(
     return Service.of({
       list,
       get,
-      contains,
       create,
       remove,
     })

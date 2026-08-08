@@ -112,8 +112,6 @@
     align-items: center;
     flex-grow: 1;
     min-width: 0;
-    direction: ltr;
-    unicode-bidi: isolate;
   }
 
   [data-slot="session-review-directory"] {

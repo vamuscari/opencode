@@ -14,11 +14,7 @@ export function promptPlaceholder(input: PromptPlaceholderInput) {
   return input.t("prompt.placeholder.normal", { example: input.example })
 }
 
-export function promptDesignPlaceholder(
-  mode: PromptPlaceholderInput["mode"],
-  placeholder: string,
-  t: PromptPlaceholderInput["t"],
-) {
+export function promptDesignPlaceholder(mode: PromptPlaceholderInput["mode"], placeholder: string) {
   if (mode === "shell") return placeholder
-  return t("ui.promptInput.placeholder.normal", { slash: "/", at: "@" })
+  return "Ask anything, / for commands, @ for context..."
 }

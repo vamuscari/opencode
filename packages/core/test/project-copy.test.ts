@@ -5,11 +5,11 @@ import path from "path"
 import { eq } from "drizzle-orm"
 import { Effect, Fiber, Stream } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@opencode-ai/util/effect/layer-node"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Git } from "@opencode-ai/core/git"
 import { Database } from "@opencode-ai/core/database/database"
-import { EventV2 } from "@opencode-ai/core/event"
+import { Bus } from "@opencode-ai/core/bus"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
@@ -18,7 +18,7 @@ import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([ProjectCopy.node, Database.node, EventV2.node, ProjectDirectories.node])),
+  AppNodeBuilder.build(LayerNode.group([ProjectCopy.node, Database.node, Bus.node, ProjectDirectories.node])),
 )
 
 function abs(input: string) {
@@ -83,20 +83,10 @@ describe("ProjectCopy", () => {
     }),
   )
 
-  it.effect("rejects duplicate strategies and reports unavailable ids", () =>
+  it.effect("reports unavailable strategy ids", () =>
     Effect.gen(function* () {
       const input = yield* setup()
       const copy = yield* ProjectCopy.Service
-      const strategy: ProjectCopy.Strategy = {
-        id: ProjectCopy.StrategyID.make("test/duplicate"),
-        create: () => Effect.die("unused"),
-        remove: () => Effect.die("unused"),
-        list: () => Effect.succeed([]),
-      }
-
-      yield* copy.register(strategy)
-      expect(yield* copy.register(strategy).pipe(Effect.flip)).toBeInstanceOf(ProjectCopy.DuplicateStrategyError)
-
       const unavailable = ProjectCopy.StrategyID.make("acme/missing")
       const error = yield* copy
         .create({
@@ -116,14 +106,14 @@ describe("ProjectCopy", () => {
     Effect.gen(function* () {
       const input = yield* setup()
       const copy = yield* ProjectCopy.Service
-      const events = yield* EventV2.Service
+      const bus = yield* Bus.Service
       const temp = yield* Effect.promise(() => fs.realpath(path.dirname(input.root.path)))
       const parent = abs(path.join(temp, path.basename(input.root.path) + "-copy-created"))
       const target = abs(path.join(parent, "copy"))
       yield* Effect.addFinalizer(() =>
         Effect.promise(() => fs.rm(parent, { recursive: true, force: true })).pipe(Effect.ignore),
       )
-      const fiber = yield* events
+      const fiber = yield* bus
         .subscribe(ProjectCopy.Event.Updated)
         .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
       yield* Effect.yieldNow
@@ -278,8 +268,8 @@ describe("ProjectCopy", () => {
     Effect.gen(function* () {
       const input = yield* setup()
       const copy = yield* ProjectCopy.Service
-      const events = yield* EventV2.Service
-      const event = yield* events.subscribe(ProjectCopy.Event.Updated).pipe(
+      const bus = yield* Bus.Service
+      const event = yield* bus.subscribe(ProjectCopy.Event.Updated).pipe(
         Stream.take(1),
         Stream.runCollect,
         Effect.forkScoped,
@@ -300,7 +290,7 @@ describe("ProjectCopy", () => {
     Effect.gen(function* () {
       const input = yield* setup()
       const copy = yield* ProjectCopy.Service
-      const events = yield* EventV2.Service
+      const bus = yield* Bus.Service
       const target = abs(`${input.root.path}-copy-external`)
       yield* Effect.addFinalizer(() =>
         Effect.promise(() => fs.rm(target, { recursive: true, force: true })).pipe(Effect.ignore),
@@ -311,7 +301,7 @@ describe("ProjectCopy", () => {
         .values({ project_id: input.projectID, directory: target })
         .run()
         .pipe(Effect.orDie)
-      const fiber = yield* events
+      const fiber = yield* bus
         .subscribe(ProjectCopy.Event.Updated)
         .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
       yield* Effect.yieldNow

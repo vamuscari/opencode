@@ -93,9 +93,6 @@
         [data-slot="dialog-description"] {
           flex: none;
           flex-grow: 0;
-          min-width: 0;
-          max-width: 100%;
-          overflow-wrap: anywhere;
           user-select: none;
           font-weight: 440;
           font-size: 13px;
@@ -112,8 +109,8 @@
           width: 20px;
           height: 20px;
           margin-top: -2px;
-          margin-inline-end: -2px;
-          margin-inline-start: auto;
+          margin-right: -2px;
+          margin-left: auto;
           border-radius: 4px;
           flex-shrink: 0;
           cursor: pointer;

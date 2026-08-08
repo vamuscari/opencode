@@ -12,15 +12,13 @@ import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
 import { showToast } from "@/utils/toast"
-import { downloadSessionExport, fetchSessionExport, sessionExportFilename } from "@/utils/session-export"
 import { findLast } from "@opencode-ai/core/util/array"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
-import { Message, Part, UserMessage } from "@opencode-ai/sdk/v2"
+import type { UserMessage } from "@/types"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
 import { useLocal } from "@/context/local"
-import { WorkspaceOperation } from "@/utils/workspace-operation"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -75,8 +73,6 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (!id) return
     return sync().session.get(id)
   }
-  const workspaceOperationPending = (sessionID: string) =>
-    WorkspaceOperation.get(sdk().scope, sessionID)?.status === "pending"
   const hasReview = () => !!params.id
   const normalizeTab = (tab: string) => {
     if (!tab.startsWith("file://")) return tab
@@ -103,8 +99,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const visibleUserMessages = () => {
     const revert = info()?.revert?.messageID
     if (!revert) return userMessages()
-    const boundary = userMessages().findIndex((message) => message.id === revert)
-    return boundary < 0 ? userMessages() : userMessages().slice(0, boundary)
+    return userMessages().filter((m) => m.id < revert)
   }
 
   const showAllFiles = () => {
@@ -192,16 +187,14 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const sessionID = params.id
     if (!sessionID) return
 
-    const existing = info()?.share?.url
+    const existing = undefined
     if (existing) {
       await copyShare(existing, true)
       return
     }
 
-    const url = await sdk()
-      .client.session.share({ sessionID })
-      .then((res) => res.data?.share?.url)
-      .catch(() => undefined)
+    // TODO: Restore sharing when the V2 client exposes a session sharing API.
+    const url = undefined
     if (!url) {
       showToast({
         title: language.t("toast.session.share.failed.title"),
@@ -218,47 +211,12 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const sessionID = params.id
     if (!sessionID) return
 
-    await sdk()
-      .client.session.unshare({ sessionID })
-      .then(() =>
-        showToast({
-          title: language.t("toast.session.unshare.success.title"),
-          description: language.t("toast.session.unshare.success.description"),
-          variant: "success",
-        }),
-      )
-      .catch(() =>
-        showToast({
-          title: language.t("toast.session.unshare.failed.title"),
-          description: language.t("toast.session.unshare.failed.description"),
-          variant: "error",
-        }),
-      )
-  }
-
-  const exportSession = async () => {
-    const sessionID = params.id
-    if (!sessionID) return
-    try {
-      const data = await fetchSessionExport({
-        sessionID,
-        client: sdk().client,
-      })
-      const filename = sessionExportFilename(data.info)
-      downloadSessionExport(filename, data)
-      showToast({
-        variant: "success",
-        icon: "circle-check",
-        title: language.t("toast.session.export.success.title"),
-        description: language.t("toast.session.export.success.description", { filename }),
-      })
-    } catch (err) {
-      showToast({
-        variant: "error",
-        title: language.t("toast.session.export.failed.title"),
-        description: err instanceof Error ? err.message : language.t("toast.session.export.failed.description"),
-      })
-    }
+    // TODO: Restore unsharing when the V2 client exposes a session sharing API.
+    showToast({
+      title: language.t("toast.session.unshare.failed.title"),
+      description: language.t("toast.session.unshare.failed.description"),
+      variant: "error",
+    })
   }
 
   const openFile = () => {
@@ -335,16 +293,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const undo = async () => {
     const sessionID = params.id
     if (!sessionID) return
-    if (workspaceOperationPending(sessionID)) return
     const owner = sessionOwnership.capture()
     const session = sdk().api.session
     const directory = sdk().directory
     const promptSession = prompt.capture()
     const revert = info()?.revert?.messageID
     const messages = userMessages()
-    const boundary = revert ? messages.findIndex((message) => message.id === revert) : messages.length
-    if (boundary < 0) return
-    const message = messages[boundary - 1]
+    const message = findLast(messages, (x) => !revert || x.id < revert)
     if (!message) return
     const parts = sync().data.part[message.id]
 
@@ -359,14 +314,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       updatePrompt: (promptSession) => {
         if (parts) promptSession.set(extractPromptFromParts(parts, { directory }))
       },
-      updateViewport: () => setActiveMessage(messages[boundary - 2]),
+      updateViewport: () => setActiveMessage(findLast(messages, (x) => x.id < message.id)),
     })
   }
 
   const redo = async () => {
     const sessionID = params.id
     if (!sessionID) return
-    if (workspaceOperationPending(sessionID)) return
     const owner = sessionOwnership.capture()
     const session = sdk().api.session
     const messages = userMessages()
@@ -375,16 +329,14 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const revertMessageID = info()?.revert?.messageID
     if (!revertMessageID) return
 
-    const boundary = messages.findIndex((message) => message.id === revertMessageID)
-    if (boundary < 0) return
-    const next = messages[boundary + 1]
+    const next = messages.find((x) => x.id > revertMessageID)
     if (!next) {
       await runCommand({
         owner,
         prompt: promptSession,
         request: () => session.revert.clear({ sessionID }),
         updatePrompt: (promptSession) => promptSession.reset(),
-        updateViewport: () => setActiveMessage(messages.at(-1)),
+        updateViewport: () => setActiveMessage(findLast(messages, (x) => x.id >= revertMessageID)),
       })
       return
     }
@@ -394,34 +346,18 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       prompt: promptSession,
       request: () => session.revert.stage({ sessionID, messageID: next.id }),
       updatePrompt: () => undefined,
-      updateViewport: () => setActiveMessage(messages[boundary]),
+      updateViewport: () => setActiveMessage(findLast(messages, (x) => x.id < next.id)),
     })
   }
 
   const compact = async () => {
     const sessionID = params.id
     if (!sessionID) return
-    if (workspaceOperationPending(sessionID)) return
 
-    const model = local.model.current()
-    if (!model) {
-      showToast({
-        title: language.t("toast.model.none.title"),
-        description: language.t("toast.model.none.description"),
-      })
-      return
-    }
-
-    await sdk().api.session.compact({
-      sessionID,
-      model: { providerID: model.provider.id, modelID: model.id },
-    })
+    await sdk().api.session.compact({ sessionID })
   }
 
   const fork = () => {
-    const sessionID = params.id
-    if (!sessionID) return
-    if (workspaceOperationPending(sessionID)) return
     void openDialog(
       () => import("@/components/dialog-fork"),
       (x) => dialog.show(() => <x.DialogFork />),
@@ -429,7 +365,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const shareCmds = () => {
-    if (sync().data.config.share === "disabled") return []
+    // TODO: Restore these commands when the V2 client exposes session sharing.
+    // if (sync().data.config.share === "disabled") return []
+    return []
+    /*
     return [
       sessionCommand({
         id: "session.share",
@@ -450,6 +389,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
         onSelect: unshare,
       }),
     ]
+    */
   }
 
   const sessionCmds = () => [
@@ -471,7 +411,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.undo"),
       description: language.t("command.session.undo.description"),
       slash: "undo",
-      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
+      disabled: !params.id || visibleUserMessages().length === 0,
       onSelect: undo,
     }),
     sessionCommand({
@@ -479,7 +419,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.redo"),
       description: language.t("command.session.redo.description"),
       slash: "redo",
-      disabled: !params.id || !info()?.revert?.messageID || workspaceOperationPending(params.id),
+      disabled: !params.id || !info()?.revert?.messageID,
       onSelect: redo,
     }),
     sessionCommand({
@@ -487,7 +427,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.compact"),
       description: language.t("command.session.compact.description"),
       slash: "compact",
-      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
+      disabled: !params.id || visibleUserMessages().length === 0,
       onSelect: compact,
     }),
     sessionCommand({
@@ -495,16 +435,8 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.fork"),
       description: language.t("command.session.fork.description"),
       slash: "fork",
-      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
+      disabled: !params.id || visibleUserMessages().length === 0,
       onSelect: fork,
-    }),
-    sessionCommand({
-      id: "session.export",
-      title: language.t("command.session.export"),
-      description: language.t("command.session.export.description"),
-      slash: "export",
-      disabled: !params.id,
-      onSelect: exportSession,
     }),
   ]
 

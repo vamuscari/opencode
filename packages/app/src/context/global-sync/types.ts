@@ -5,15 +5,17 @@ import type {
   Message,
   Part,
   Path,
+  Todo,
+  VcsInfo,
+} from "@/types"
+import type {
+  FileDiffInfo,
   PermissionRequest,
   QuestionRequest,
   ReferenceInfo,
-  Session,
+  SessionInfo,
   SessionStatus,
-  Todo,
-  VcsInfo,
-} from "@opencode-ai/sdk/v2/client"
-import type { FileDiffInfo } from "@opencode-ai/client/promise"
+} from "@opencode-ai/client/promise"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import type { CommandInfo, McpResource, McpServer, SessionMessageInfo } from "@opencode-ai/client/promise"
 import type { Accessor } from "solid-js"
@@ -42,7 +44,7 @@ export type State = {
   provider: NormalizedProviderListResponse
   config: Config
   path: Path
-  session: Session[]
+  session: SessionInfo[]
   sessionTotal: number
   session_status: {
     [sessionID: string]: SessionStatus

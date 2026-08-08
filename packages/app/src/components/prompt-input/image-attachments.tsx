@@ -16,7 +16,6 @@ type PromptImageAttachmentsProps = {
   onOpen: (attachment: ImageAttachmentPart) => void
   onRemove: (id: string) => void
   removeLabel: string
-  fileLabel: string
   newLayoutDesigns: boolean
   comments?: PromptCommentItem[]
   commentActive?: (item: PromptCommentItem) => boolean
@@ -53,7 +52,12 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
             <For each={props.comments ?? []}>
               {(item) => (
                 <div class="relative group shrink-0">
-                  <TooltipV2 value={item.comment} placement="top" contentClass="max-w-[300px] break-words">
+                  <TooltipV2
+                    value={item.comment}
+                    placement="top"
+                    openDelay={800}
+                    contentClass="max-w-[300px] break-words"
+                  >
                     <CommentCardV2
                       comment={item.comment ?? ""}
                       path={item.path}
@@ -90,13 +94,13 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                       }
                     >
                       <AttachmentCardV2 title={attachment.filename}>
-                        {typeLabel(attachment.filename, attachment.mime, props.fileLabel)}
+                        {typeLabel(attachment.filename, attachment.mime)}
                       </AttachmentCardV2>
                     </Show>
                   }
                 >
                   <img
-                    src={attachment.blob.url}
+                    src={attachment.dataUrl}
                     alt={attachment.filename}
                     class={props.newLayoutDesigns ? imageClassV2 : imageClass}
                     onClick={() => props.onOpen(attachment)}

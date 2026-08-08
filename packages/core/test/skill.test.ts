@@ -1,14 +1,16 @@
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
+import { Deferred, Effect, Fiber, Layer, Stream } from "effect"
+import { Agent } from "@opencode-ai/core/agent"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { LayerNode } from "@opencode-ai/util/effect/layer-node"
+import { Bus } from "@opencode-ai/core/bus"
+import { FSUtil } from "@opencode-ai/util/fs-util"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SkillV2 } from "@opencode-ai/core/skill"
+import { Skill } from "@opencode-ai/core/skill"
 import { SkillDiscovery } from "@opencode-ai/core/skill/discovery"
+import { FileSystem } from "@opencode-ai/schema/filesystem"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -24,7 +26,7 @@ const discovery = Layer.succeed(
   }),
 )
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([SkillV2.node, AgentV2.node]), [[SkillDiscovery.node, discovery]]),
+  AppNodeBuilder.build(LayerNode.group([Skill.node, Agent.node, Bus.node]), [[SkillDiscovery.node, discovery]]),
 )
 
 function write(directory: string, name: string, description: string) {
@@ -38,7 +40,37 @@ description: ${description}
   )
 }
 
-describe("SkillV2", () => {
+function waitForSkillUpdate() {
+  return Effect.gen(function* () {
+    const bus = yield* Bus.Service
+    const deferred = yield* Deferred.make<void>()
+    const fiber = yield* bus.subscribe(Skill.Event.Updated).pipe(
+      Stream.runForEach(() => Deferred.succeed(deferred, undefined).pipe(Effect.asVoid)),
+      Effect.forkScoped,
+    )
+    yield* Effect.yieldNow
+    return { deferred, fiber }
+  })
+}
+
+describe("Skill", () => {
+  it.live("publishes updates when skill sources change", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+
+      yield* Effect.acquireUseRelease(
+        waitForSkillUpdate(),
+        ({ deferred }) =>
+          skill
+            .transform((editor) =>
+              editor.source({ type: "directory", path: AbsolutePath.make("/tmp/opencode-skills") }),
+            )
+            .pipe(Effect.andThen(Deferred.await(deferred)), Effect.timeout("1 second")),
+        ({ fiber }) => Fiber.interrupt(fiber),
+      )
+    }),
+  )
+
   it.live("registers sources and resolves later source precedence", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -56,7 +88,7 @@ describe("SkillV2", () => {
             await fs.writeFile(path.join(first, "foo.md"), "---\nslash: true\n---\n# foo")
           })
 
-          const skill = yield* SkillV2.Service
+          const skill = yield* Skill.Service
           yield* skill.transform((editor) => {
             editor.source({ type: "directory", path: AbsolutePath.make(first) })
             editor.source({ type: "directory", path: AbsolutePath.make(first) })
@@ -72,14 +104,16 @@ describe("SkillV2", () => {
             { type: "directory", path: AbsolutePath.make(second) },
           ])
           expect(yield* skill.list()).toEqual([
-            SkillV2.Info.make({
-              name: "foo",
+            Skill.Info.make({
+              id: Skill.ID.make("foo"),
+              name: Skill.Name.make("foo"),
               slash: true,
               location: AbsolutePath.make(path.join(first, "foo.md")),
               content: "# foo",
             }),
             {
-              name: "review",
+              id: Skill.ID.make("review"),
+              name: Skill.Name.make("review"),
               description: "Second",
               location: AbsolutePath.make(path.join(second, "review", "SKILL.md")),
               content: "# review",
@@ -104,20 +138,98 @@ describe("SkillV2", () => {
           pulls = 0
           urls.set("https://example.test/skills/", [AbsolutePath.make(tmp.path)])
 
-          const agents = yield* AgentV2.Service
+          const agents = yield* Agent.Service
           yield* agents.transform((editor) =>
-            editor.update(AgentV2.ID.make("reviewer"), (agent) => {
+            editor.update(Agent.ID.make("reviewer"), (agent) => {
               agent.permissions.push({ action: "skill", resource: "deploy", effect: "deny" })
             }),
           )
 
-          const skill = yield* SkillV2.Service
+          const skill = yield* Skill.Service
           yield* skill.transform((editor) => editor.source({ type: "url", url: "https://example.test/skills/" }))
 
-          expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
-          expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
+          expect((yield* skill.list()).map((item) => item.name)).toEqual([Skill.Name.make("deploy")])
+          expect((yield* skill.list()).map((item) => item.name)).toEqual([Skill.Name.make("deploy")])
           expect(pulls).toBe(1)
-          expect(SkillV2.available(yield* skill.list(), (yield* agents.get(AgentV2.ID.make("reviewer")))!)).toEqual([])
+          expect(Skill.available(yield* skill.list(), (yield* agents.get(Agent.ID.make("reviewer")))!)).toEqual([])
+        }),
+      ),
+    ),
+  )
+
+  it.live("parses opencode metadata flags from skill frontmatter", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "manual"), { recursive: true })
+            await fs.writeFile(
+              path.join(tmp.path, "manual", "SKILL.md"),
+              `---
+name: manual
+description: Manual only
+metadata:
+  opencode/slash: true
+  opencode/autoinvoke: false
+---
+# manual`,
+            )
+          })
+
+          const skill = yield* Skill.Service
+          yield* skill.transform((editor) => editor.source({ type: "directory", path: AbsolutePath.make(tmp.path) }))
+
+          expect(yield* skill.list()).toEqual([
+            {
+              id: Skill.ID.make("manual"),
+              name: Skill.Name.make("manual"),
+              description: "Manual only",
+              slash: true,
+              autoinvoke: false,
+              location: AbsolutePath.make(path.join(tmp.path, "manual", "SKILL.md")),
+              content: "# manual",
+            },
+          ])
+        }),
+      ),
+    ),
+  )
+
+  it.live("invalidates cached skills and publishes updates for watcher changes", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "deploy"), { recursive: true })
+            await write(tmp.path, "deploy", "Initial deploy")
+          })
+
+          const bus = yield* Bus.Service
+          const skill = yield* Skill.Service
+          yield* skill.transform((editor) => editor.source({ type: "directory", path: AbsolutePath.make(tmp.path) }))
+
+          expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe("Initial deploy")
+
+          const file = path.join(tmp.path, "deploy", "SKILL.md")
+          yield* Effect.promise(() => write(tmp.path, "deploy", "Updated deploy"))
+          expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe("Initial deploy")
+
+          yield* Effect.acquireUseRelease(
+            waitForSkillUpdate(),
+            ({ deferred }) =>
+              bus
+                .publish(FileSystem.Event.Changed, { file, event: "change" })
+                .pipe(Effect.andThen(Deferred.await(deferred)), Effect.timeout("1 second")),
+            ({ fiber }) => Fiber.interrupt(fiber),
+          )
+
+          expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe("Updated deploy")
         }),
       ),
     ),

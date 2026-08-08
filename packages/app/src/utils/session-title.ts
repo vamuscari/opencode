@@ -1,15 +1,10 @@
+import type { SessionInfo } from "@opencode-ai/client/promise"
+import { displayLabel } from "@opencode-ai/util/session-title-fallback"
+
 const pattern = /^(New session|Child session) - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 
-interface Info {
-  readonly title?: string
-  readonly parentID?: string
-  readonly time: {
-    readonly created: number
-  }
-}
-
-export function withTimestampedFallback(info: Info) {
-  return info.title ?? `${info.parentID ? "Child" : "New"} session - ${new Date(info.time.created).toISOString()}`
+export function sessionLabel(session: Pick<SessionInfo, "title" | "parentID">) {
+  return displayLabel(session)
 }
 
 export function sessionTitle(title?: string) {

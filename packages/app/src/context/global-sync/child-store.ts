@@ -1,7 +1,7 @@
 import { createRoot, createSignal, getOwner, onCleanup, runWithOwner, type Owner } from "solid-js"
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
-import type { VcsInfo } from "@opencode-ai/sdk/v2/client"
+import type { VcsInfo } from "@/types"
 import {
   DIR_IDLE_TTL_MS,
   MAX_DIR_STORES,
@@ -47,7 +47,6 @@ export function createChildStoreManager(input: {
   const mcpToggles = new Map<string, (enabled: boolean) => void>()
   const activeDirectories = new Set<string>()
   const activationToggles = new Map<string, (enabled: boolean) => void>()
-  const providerToggles = new Map<string, (enabled: boolean) => void>()
 
   const markKey = (key: DirectoryKey) => {
     if (!key) return
@@ -123,7 +122,6 @@ export function createChildStoreManager(input: {
     mcpToggles.delete(key)
     activeDirectories.delete(key)
     activationToggles.delete(key)
-    providerToggles.delete(key)
     const dispose = disposers.get(key)
     if (dispose) {
       dispose()
@@ -189,7 +187,6 @@ export function createChildStoreManager(input: {
           const initialIcon = icon[0].value
           const [mcpEnabled, setMcpEnabled] = createSignal(false)
           const [instanceQueriesEnabled, setInstanceQueriesEnabled] = createSignal(false)
-          const [providerEnabled, setProviderEnabled] = createSignal(false)
 
           const pathQuery = useQuery(() => ({ ...input.queryOptions.path(key), enabled: instanceQueriesEnabled() }))
           const mcpQuery = useQuery(() => ({ ...input.queryOptions.mcp(key), enabled: mcpEnabled() }))
@@ -197,7 +194,7 @@ export function createChildStoreManager(input: {
           const lspQuery = useQuery(() => ({ ...input.queryOptions.lsp(key), enabled: instanceQueriesEnabled() }))
           const providerQuery = useQuery(() => ({
             ...input.queryOptions.providers(key),
-            enabled: providerEnabled(),
+            enabled: instanceQueriesEnabled(),
           }))
           const referenceQuery = useQuery(() => ({
             ...input.queryOptions.references(key),
@@ -209,7 +206,7 @@ export function createChildStoreManager(input: {
             projectMeta: initialMeta,
             icon: initialIcon,
             get provider_ready() {
-              return providerEnabled() && !providerQuery.isLoading
+              return instanceQueriesEnabled() && !providerQuery.isLoading
             },
             get provider() {
               const EMPTY = { all: new Map(), connected: [], default: {} }
@@ -266,7 +263,6 @@ export function createChildStoreManager(input: {
           disposers.set(key, dispose)
           mcpToggles.set(key, setMcpEnabled)
           activationToggles.set(key, setInstanceQueriesEnabled)
-          providerToggles.set(key, setProviderEnabled)
 
           const onPersistedInit = (init: Promise<string> | string | null, run: () => void) => {
             if (!(init instanceof Promise)) return
@@ -333,12 +329,6 @@ export function createChildStoreManager(input: {
     if (childStore[0].status !== "loading") input.onMcp(directory, childStore[1])
   }
 
-  function enableProviders(directory: string) {
-    const key = directoryKey(directory)
-    ensureChild(directory)
-    providerToggles.get(key)?.(true)
-  }
-
   // Passive Home/project metadata reads must not initialize the directory.
   // A real directory access enables these queries once for the store lifetime.
   // TODO(v2): After Home switches to v2.project.list and root-filtered,
@@ -397,7 +387,6 @@ export function createChildStoreManager(input: {
     mcp: (directory: string) => mcpDirectories.has(directoryKey(directory)),
     active: (directory: string) => activeDirectories.has(directoryKey(directory)),
     disableMcp,
-    enableProviders,
     disposeDirectory,
     runEviction,
     vcsCache,
